@@ -56,8 +56,10 @@ void ServerManager::begin() {
 void ServerManager::initializePWM() {
     Serial.println("DEBUG: Initializing PWM system...");
 
-    if (ledcSetup(0, 1000, 8)) {
-        Serial.println("DEBUG: PWM Channel 0 setup successful");
+    uint32_t freq = Config::MANUAL_PWM_MODE ? Config::MANUAL_PWM_FREQ : 1000;
+    
+    if (ledcSetup(0, freq, 8)) {
+        Serial.printf("DEBUG: PWM Channel 0 setup successful with %u Hz\n", freq);
 
         ledcAttachPin(22, 0);
         Serial.println("DEBUG: PWM Pin 22 attached to channel 0");
@@ -66,6 +68,31 @@ void ServerManager::initializePWM() {
         Serial.println("DEBUG: PWM initialized - Pin 22 set to 0%");
     } else {
         Serial.println("ERROR: PWM Channel 0 setup failed");
+    }
+}
+
+void ServerManager::reconfigurePWM(uint32_t frequency) {
+    Serial.printf("DEBUG: Reconfiguring PWM to %u Hz...\n", frequency);
+    
+    // Detach pin first
+    ledcDetachPin(22);
+    
+    // Reconfigure with new frequency
+    if (ledcSetup(0, frequency, 8)) {
+        Serial.printf("DEBUG: PWM Channel 0 reconfigured to %u Hz\n", frequency);
+        
+        // Reattach pin
+        ledcAttachPin(22, 0);
+        Serial.println("DEBUG: PWM Pin 22 reattached to channel 0");
+        
+        // Restore duty cycle if in manual mode
+        if (Config::MANUAL_PWM_MODE) {
+            int duty = map(Config::MANUAL_PWM_DUTY, 0, 100, 0, 255);
+            ledcWrite(0, duty);
+            Serial.printf("DEBUG: PWM duty restored to %u%%\n", Config::MANUAL_PWM_DUTY);
+        }
+    } else {
+        Serial.println("ERROR: PWM reconfiguration failed");
     }
 }
 
@@ -173,6 +200,14 @@ void ServerManager::setupRoutes() {
   server.on("/api/auto-pwm", HTTP_POST, [this]() { 
     Serial.println("DEBUG: Auto PWM route triggered");
     handleAutoPWM(); 
+  });
+  server.on("/api/manual-pwm-mode", HTTP_POST, [this]() { 
+    Serial.println("DEBUG: Manual PWM Mode route triggered");
+    handleManualPWMMode(); 
+  });
+  server.on("/api/manual-pwm-settings", HTTP_POST, [this]() { 
+    Serial.println("DEBUG: Manual PWM Settings route triggered");
+    handleManualPWMSettings(); 
   });
   
   server.on("/api/firmware-update", HTTP_POST, 
@@ -813,12 +848,20 @@ void ServerManager::handlePWMStatus() {
     Serial.println("DEBUG: PWM Status - Authentication successful");
     Serial.println("DEBUG: PWM Status - Building JSON response");
     
+    int currentDuty = ledcRead(0);
+    float dutyCyclePercent = (currentDuty / 255.0) * 100.0;
+    
     String json = "{";
     json += "\"pwm_pin\": 22,";
-    json += "\"duty\": " + String(ledcRead(0));
+    json += "\"duty_raw\": " + String(currentDuty) + ",";
+    json += "\"duty_percent\": " + String(dutyCyclePercent, 1) + ",";
+    json += "\"manual_mode\": " + String(Config::MANUAL_PWM_MODE ? "true" : "false") + ",";
+    json += "\"manual_freq\": " + String(Config::MANUAL_PWM_FREQ) + ",";
+    json += "\"manual_duty\": " + String(Config::MANUAL_PWM_DUTY);
     json += "}";
     
-    Serial.printf("DEBUG: PWM Status - Pin 22, Duty %d\n", ledcRead(0));
+    Serial.printf("DEBUG: PWM Status - Pin 22, Duty %d (%.1f%%), Mode: %s\n", 
+                  currentDuty, dutyCyclePercent, Config::MANUAL_PWM_MODE ? "Manual" : "Auto");
     Serial.printf("DEBUG: PWM Status - JSON: %s\n", json.c_str());
     server.send(200, "application/json", json);
 }
@@ -990,6 +1033,90 @@ void ServerManager::handleAutoPWM() {
     }
 }
 
+// Manual PWM Mode Handler
+void ServerManager::handleManualPWMMode() {
+    Serial.println("DEBUG: Manual PWM Mode Handler called");
+    
+    if (!isAuthenticated()) {
+        Serial.println("DEBUG: Manual PWM Mode - Authentication failed");
+        server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+    
+    Serial.println("DEBUG: Manual PWM Mode - Authentication successful");
+    
+    if (server.hasArg("mode")) {
+        bool manualMode = server.arg("mode") == "manual";
+        
+        Serial.printf("DEBUG: Manual PWM Mode - Setting mode=%s\n", manualMode ? "manual" : "auto");
+        
+        // Save setting
+        Config::saveManualPWMMode(manualMode);
+        
+        // If switching to auto mode, trigger auto PWM update
+        if (!manualMode) {
+            Config::saveAutoPWMEnabled(true);
+            updateAutoPWM();
+        }
+        
+        Serial.printf("DEBUG: Manual PWM Mode - Saved mode=%s\n", manualMode ? "manual" : "auto");
+        server.send(200, "text/plain", "OK");
+    } else {
+        Serial.println("DEBUG: Manual PWM Mode - Missing parameters");
+        server.send(400, "text/plain", "Missing parameters");
+    }
+}
+
+// Manual PWM Settings Handler
+void ServerManager::handleManualPWMSettings() {
+    Serial.println("DEBUG: Manual PWM Settings Handler called");
+    
+    if (!isAuthenticated()) {
+        Serial.println("DEBUG: Manual PWM Settings - Authentication failed");
+        server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+    
+    Serial.println("DEBUG: Manual PWM Settings - Authentication successful");
+    
+    if (server.hasArg("frequency") && server.hasArg("duty")) {
+        uint32_t frequency = server.arg("frequency").toInt();
+        uint8_t dutyCycle = server.arg("duty").toInt();
+        
+        // Validate inputs
+        if (frequency < 100 || frequency > 40000) {
+            Serial.println("ERROR: Invalid frequency (100-40000 Hz)");
+            server.send(400, "text/plain", "Invalid frequency (100-40000 Hz)");
+            return;
+        }
+        
+        if (dutyCycle > 100) {
+            Serial.println("ERROR: Invalid duty cycle (0-100%)");
+            server.send(400, "text/plain", "Invalid duty cycle (0-100%)");
+            return;
+        }
+        
+        Serial.printf("DEBUG: Manual PWM Settings - Freq=%u Hz, Duty=%u%%\n", frequency, dutyCycle);
+        
+        // Save settings
+        Config::saveManualPWMSettings(frequency, dutyCycle);
+        
+        // Apply frequency change
+        reconfigurePWM(frequency);
+        
+        // Apply duty cycle (convert % to 0-255)
+        int duty255 = map(dutyCycle, 0, 100, 0, 255);
+        setPWMDuty(duty255);
+        
+        Serial.printf("DEBUG: Manual PWM Settings - Applied Freq=%u Hz, Duty=%u%% (raw=%d)\n", 
+                      frequency, dutyCycle, duty255);
+        server.send(200, "text/plain", "OK");
+    } else {
+        Serial.println("DEBUG: Manual PWM Settings - Missing parameters");
+        server.send(400, "text/plain", "Missing parameters");
+    }
+}
+
 // Map temperature to PWM duty cycle (1-255)
 int ServerManager::mapTemperatureToPWM(float temperature) {
     // If temperature is below start temperature, return 0 (off)
@@ -1014,6 +1141,11 @@ int ServerManager::mapTemperatureToPWM(float temperature) {
 
 // Update PWM based on current temperature (called from auto PWM mode)
 void ServerManager::updateAutoPWM() {
+    // Skip if in manual mode
+    if (Config::MANUAL_PWM_MODE) {
+        return; // Manual mode active
+    }
+    
     if (!Config::AUTO_PWM_ENABLED) {
         return; // Auto PWM is disabled
     }

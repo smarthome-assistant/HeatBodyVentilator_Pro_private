@@ -9,6 +9,7 @@ public:
     void begin();
     void handleClient();
     void initializePWM();
+    void reconfigurePWM(uint32_t frequency);
     void setPWMDuty(int duty);
     void updateSensors();
     KMeterManager* getKMeterManager() { return &kmeterManager; }
@@ -49,6 +50,8 @@ private:
     void handleTempMapping();
     void handleTempMappingStatus();
     void handleAutoPWM();
+    void handleManualPWMMode();
+    void handleManualPWMSettings();
     
     bool isAuthenticated();
     

@@ -17,6 +17,11 @@ namespace Config {
     float TEMP_START = 30.0;
     float TEMP_MAX = 80.0;
     bool AUTO_PWM_ENABLED = true;
+    
+    // Manual PWM Mode settings
+    bool MANUAL_PWM_MODE = false;     // false = Auto, true = Manual
+    uint32_t MANUAL_PWM_FREQ = 1000;  // Default 1000 Hz
+    uint8_t MANUAL_PWM_DUTY = 0;      // Default 0%
 
     void loadSettings() {
         Preferences prefs;
@@ -64,6 +69,10 @@ namespace Config {
         TEMP_START = prefs.getFloat("temp_start", 30.0);
         TEMP_MAX = prefs.getFloat("temp_max", 80.0);
         AUTO_PWM_ENABLED = prefs.getBool("auto_pwm", true);
+        
+        MANUAL_PWM_MODE = prefs.getBool("manual_mode", false);
+        MANUAL_PWM_FREQ = prefs.getUInt("manual_freq", 1000);
+        MANUAL_PWM_DUTY = prefs.getUChar("manual_duty", 0);
         
         prefs.end();
         Serial.println("Settings loaded successfully");
@@ -184,6 +193,9 @@ namespace Config {
         TEMP_START = 30.0;
         TEMP_MAX = 80.0;
         AUTO_PWM_ENABLED = true;
+        MANUAL_PWM_MODE = false;
+        MANUAL_PWM_FREQ = 1000;
+        MANUAL_PWM_DUTY = 0;
         
         Serial.println("Factory reset completed");
     }
@@ -220,5 +232,35 @@ namespace Config {
 
     String getLastPasswordChange() {
         return String(LAST_PASSWORD_CHANGE);
+    }
+
+    void saveManualPWMMode(bool enabled) {
+        Preferences prefs;
+        if (prefs.begin("settings", false)) {
+            prefs.putBool("manual_mode", enabled);
+            prefs.end();
+            
+            MANUAL_PWM_MODE = enabled;
+            
+            Serial.printf("Manual PWM mode saved: %s\n", enabled ? "Manual" : "Auto");
+        } else {
+            Serial.println("Error: Failed to save manual PWM mode");
+        }
+    }
+
+    void saveManualPWMSettings(uint32_t frequency, uint8_t dutyCycle) {
+        Preferences prefs;
+        if (prefs.begin("settings", false)) {
+            prefs.putUInt("manual_freq", frequency);
+            prefs.putUChar("manual_duty", dutyCycle);
+            prefs.end();
+            
+            MANUAL_PWM_FREQ = frequency;
+            MANUAL_PWM_DUTY = dutyCycle;
+            
+            Serial.printf("Manual PWM settings saved: Freq=%u Hz, Duty=%u%%\n", frequency, dutyCycle);
+        } else {
+            Serial.println("Error: Failed to save manual PWM settings");
+        }
     }
 }

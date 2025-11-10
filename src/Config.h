@@ -24,6 +24,11 @@ namespace Config {
     extern float TEMP_START;
     extern float TEMP_MAX;
     extern bool AUTO_PWM_ENABLED;
+    
+    // Manual PWM Mode settings
+    extern bool MANUAL_PWM_MODE;      // false = Auto, true = Manual
+    extern uint32_t MANUAL_PWM_FREQ;  // PWM Frequency in Hz
+    extern uint8_t MANUAL_PWM_DUTY;   // PWM Duty Cycle in % (0-100)
 
     void loadSettings();
     void saveWebPassword(const char* newPassword);
@@ -33,6 +38,8 @@ namespace Config {
     void saveAPEnabled(bool enabled);
     void saveTempMapping(float startTemp, float maxTemp);
     void saveAutoPWMEnabled(bool enabled);
+    void saveManualPWMMode(bool enabled);
+    void saveManualPWMSettings(uint32_t frequency, uint8_t dutyCycle);
     void factoryReset();
     String getLastPasswordChange();
 }

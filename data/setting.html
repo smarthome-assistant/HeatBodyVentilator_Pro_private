@@ -656,47 +656,96 @@
           <div class="card-header">
             <h3 class="card-title">
               <i class="fas fa-fan" aria-hidden="true"></i>
-              <span class="icon-fallback">�</span> Lüfter-Steuerung
+              <span class="icon-fallback">🌀</span> Lüfter-Steuerung
             </h3>
           </div>
           
           <div class="setting-item">
             <div class="setting-label">
               <span>Lüfter Status</span>
-              <small class="d-block" style="color: #6c757d;">Automatische temperaturbasierte Steuerung</small>
+              <small class="d-block" style="color: #6c757d;">Aktueller Betriebsmodus</small>
             </div>
             <div class="setting-control">
               <span class="status-indicator status-connected" id="pwm-status">
                 <i class="fas fa-fan" aria-hidden="true"></i>
-                <span class="icon-fallback">🌀</span> Aktiv
+                <span class="icon-fallback">🌀</span> <span id="pwm-mode-text">Automatik</span>
               </span>
             </div>
           </div>
           
           <div class="btn-separator"></div>
           
-          <!-- Temperatur-Mapping Einstellungen -->
+          <!-- Modus-Auswahl -->
           <div class="setting-item">
             <div class="setting-label">
-              <span>Starttemperatur</span>
-              <small class="d-block" style="color: #6c757d;">Temperatur bei der der Lüfter anläuft (°C)</small>
+              <span>Betriebsmodus</span>
+              <small class="d-block" style="color: #6c757d;">Automatische oder manuelle Steuerung</small>
             </div>
             <div class="setting-control">
-              <input type="number" id="start-temp" min="0" max="200" value="30" 
-                     style="width: 80px;" onchange="updateTempMapping()">
-              <span style="margin-left: 5px;">°C</span>
+              <select id="fan-mode" onchange="changeFanMode()" style="padding: 8px; border-radius: 4px; border: 1px solid #ddd;">
+                <option value="auto">Automatische temperaturbasierte Steuerung</option>
+                <option value="manual">Manueller Modus (PWM-Frequenz, Tastverhältnis)</option>
+              </select>
             </div>
           </div>
           
-          <div class="setting-item">
-            <div class="setting-label">
-              <span>Maximaltemperatur</span>
-              <small class="d-block" style="color: #6c757d;">Temperatur bei der der Lüfter Vollgas läuft (°C)</small>
+          <div class="btn-separator"></div>
+          
+          <!-- Automatik-Modus Einstellungen -->
+          <div id="auto-mode-settings">
+            <div class="setting-item">
+              <div class="setting-label">
+                <span>Starttemperatur</span>
+                <small class="d-block" style="color: #6c757d;">Temperatur bei der der Lüfter anläuft (°C)</small>
+              </div>
+              <div class="setting-control">
+                <input type="number" id="start-temp" min="0" max="200" value="30" 
+                       style="width: 80px;" onchange="updateTempMapping()">
+                <span style="margin-left: 5px;">°C</span>
+              </div>
             </div>
-            <div class="setting-control">
-              <input type="number" id="max-temp" min="0" max="200" value="80" 
-                     style="width: 80px;" onchange="updateTempMapping()">
-              <span style="margin-left: 5px;">°C</span>
+            
+            <div class="setting-item">
+              <div class="setting-label">
+                <span>Maximaltemperatur</span>
+                <small class="d-block" style="color: #6c757d;">Temperatur bei der der Lüfter Vollgas läuft (°C)</small>
+              </div>
+              <div class="setting-control">
+                <input type="number" id="max-temp" min="0" max="200" value="80" 
+                       style="width: 80px;" onchange="updateTempMapping()">
+                <span style="margin-left: 5px;">°C</span>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Manueller Modus Einstellungen -->
+          <div id="manual-mode-settings" style="display: none;">
+            <div class="setting-item">
+              <div class="setting-label">
+                <span>PWM-Frequenz</span>
+                <small class="d-block" style="color: #6c757d;">Frequenz des PWM-Signals (100-40000 Hz)</small>
+              </div>
+              <div class="setting-control">
+                <input type="number" id="pwm-frequency" min="100" max="40000" value="1000" 
+                       style="width: 100px;">
+                <span style="margin-left: 5px;">Hz</span>
+                <button onclick="applyManualPWMSettings()" style="margin-left: 10px; padding: 6px 12px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;">Übernehmen</button>
+              </div>
+            </div>
+            
+            <div class="setting-item">
+              <div class="setting-label">
+                <span>PWM Tastverhältnis</span>
+                <small class="d-block" style="color: #6c757d;">Geschwindigkeit des Lüfters (0-100%)</small>
+              </div>
+              <div class="setting-control">
+                <input type="range" id="pwm-duty-slider" min="0" max="100" value="0" 
+                       style="width: 200px; margin-right: 10px;" oninput="updatePWMDutyDisplay()">
+                <input type="number" id="pwm-duty" min="0" max="100" value="0" 
+                       style="width: 70px;" oninput="updatePWMDutySlider()">
+                <span style="margin-left: 5px;">%</span>
+                <button onclick="applyManualPWMSettings()" style="margin-left: 10px; padding: 6px 12px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;">Übernehmen</button>
+              </div>
             </div>
           </div>
         </div>
@@ -1323,6 +1372,10 @@
     }
 
     // Fan Control Functions
+    function updatePWMStatus() {
+      updateFanStatus();
+    }
+    
     function updateFanStatus() {
       console.log('DEBUG: updateFanStatus called');
       fetch('/api/pwm-status?token=' + getToken())
@@ -1332,16 +1385,42 @@
         })
         .then(data => {
           console.log('DEBUG: Fan status data:', data);
-          // Fan status is managed automatically, just update the display
+          
           const fanStatus = document.getElementById('pwm-status');
+          const modeText = document.getElementById('pwm-mode-text');
+          const fanModeSelect = document.getElementById('fan-mode');
+          const pwmFreqInput = document.getElementById('pwm-frequency');
+          const pwmDutyInput = document.getElementById('pwm-duty');
+          const pwmDutySlider = document.getElementById('pwm-duty-slider');
+          
+          // Update mode display and select
+          if (data.manual_mode) {
+            if (modeText) modeText.textContent = 'Manuell';
+            if (fanModeSelect) fanModeSelect.value = 'manual';
+            showManualMode();
+            
+            // Update manual mode values
+            if (pwmFreqInput) pwmFreqInput.value = data.manual_freq || 1000;
+            if (pwmDutyInput) pwmDutyInput.value = data.manual_duty || 0;
+            if (pwmDutySlider) pwmDutySlider.value = data.manual_duty || 0;
+          } else {
+            if (modeText) modeText.textContent = 'Automatik';
+            if (fanModeSelect) fanModeSelect.value = 'auto';
+            showAutoMode();
+          }
+          
+          // Update status text
           if (fanStatus) {
-            if (data.duty !== undefined && data.duty > 0) {
-              fanStatus.innerHTML = '<i class="fas fa-fan"></i><span class="icon-fallback">🌀</span> Läuft (' + Math.round((data.duty / 255) * 100) + '%)';
+            if (data.duty_raw !== undefined && data.duty_raw > 0) {
+              fanStatus.innerHTML = '<i class="fas fa-fan"></i><span class="icon-fallback">🌀</span> <span id="pwm-mode-text">' + 
+                                    (data.manual_mode ? 'Manuell' : 'Automatik') + '</span>';
             } else {
-              fanStatus.innerHTML = '<i class="fas fa-fan"></i><span class="icon-fallback">🌀</span> Bereit';
+              fanStatus.innerHTML = '<i class="fas fa-fan"></i><span class="icon-fallback">🌀</span> <span id="pwm-mode-text">' + 
+                                    (data.manual_mode ? 'Manuell' : 'Automatik') + '</span>';
             }
           }
-          console.log(`DEBUG: Fan status updated - Duty: ${data.duty}`);
+          
+          console.log(`DEBUG: Fan status updated - Mode: ${data.manual_mode ? 'Manual' : 'Auto'}, Duty: ${data.duty_percent}%`);
         })
         .catch(error => {
           console.error('DEBUG: Fan status error:', error);
@@ -1350,6 +1429,102 @@
             fanStatus.innerHTML = '<i class="fas fa-exclamation-triangle"></i><span class="icon-fallback">⚠️</span> Fehler';
           }
         });
+    }
+    
+    function changeFanMode() {
+      const mode = document.getElementById('fan-mode').value;
+      console.log('DEBUG: Changing fan mode to:', mode);
+      
+      fetch('/api/manual-pwm-mode?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'mode=' + mode
+      })
+      .then(response => response.text())
+      .then(data => {
+        if (data === 'OK') {
+          showNotification('Modus erfolgreich geändert zu: ' + (mode === 'manual' ? 'Manuell' : 'Automatik'), 'success');
+          if (mode === 'manual') {
+            showManualMode();
+          } else {
+            showAutoMode();
+          }
+          updateFanStatus();
+        } else {
+          showNotification('Fehler beim Ändern des Modus', 'error');
+        }
+      })
+      .catch(error => {
+        console.error('DEBUG: Mode change error:', error);
+        showNotification('Netzwerkfehler beim Ändern des Modus', 'error');
+      });
+    }
+    
+    function showManualMode() {
+      document.getElementById('auto-mode-settings').style.display = 'none';
+      document.getElementById('manual-mode-settings').style.display = 'block';
+    }
+    
+    function showAutoMode() {
+      document.getElementById('auto-mode-settings').style.display = 'block';
+      document.getElementById('manual-mode-settings').style.display = 'none';
+    }
+    
+    function updatePWMDutyDisplay() {
+      const slider = document.getElementById('pwm-duty-slider');
+      const input = document.getElementById('pwm-duty');
+      input.value = slider.value;
+    }
+    
+    function updatePWMDutySlider() {
+      const slider = document.getElementById('pwm-duty-slider');
+      const input = document.getElementById('pwm-duty');
+      let value = parseInt(input.value);
+      if (value < 0) value = 0;
+      if (value > 100) value = 100;
+      input.value = value;
+      slider.value = value;
+    }
+    
+    function applyManualPWMSettings() {
+      const frequency = document.getElementById('pwm-frequency').value;
+      const duty = document.getElementById('pwm-duty').value;
+      
+      console.log('DEBUG: Applying manual PWM settings - Freq:', frequency, 'Duty:', duty);
+      
+      // Validation
+      if (frequency < 100 || frequency > 40000) {
+        showNotification('Ungültige Frequenz (100-40000 Hz)', 'error');
+        return;
+      }
+      
+      if (duty < 0 || duty > 100) {
+        showNotification('Ungültiges Tastverhältnis (0-100%)', 'error');
+        return;
+      }
+      
+      fetch('/api/manual-pwm-settings?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'frequency=' + frequency + '&duty=' + duty
+      })
+      .then(response => response.text())
+      .then(data => {
+        if (data === 'OK') {
+          showNotification('PWM-Einstellungen erfolgreich übernommen: ' + frequency + ' Hz, ' + duty + '%', 'success');
+          updateFanStatus();
+        } else {
+          showNotification('Fehler beim Übernehmen der PWM-Einstellungen: ' + data, 'error');
+        }
+      })
+      .catch(error => {
+        console.error('DEBUG: Manual PWM settings error:', error);
+        showNotification('Netzwerkfehler beim Übernehmen der PWM-Einstellungen', 'error');
+      });
     }
 
     // Temperature Mapping Functions
