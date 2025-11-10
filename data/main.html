@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, maximum-scale=5.0">
+  <title>HeatBodyVentilator / %DEVICE_NAME% - Home</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Hamburger Menu Styles */
+    .hamburger-menu {
+      position: fixed;
+      top: 15px;
+      right: 20px;
+      width: 35px;
+      height: 30px;
+      cursor: pointer;
+      z-index: 1001;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .hamburger-menu span {
+      width: 100%;
+      height: 3px;
+      background-color: var(--primary);
+      border-radius: 2px;
+      transition: all 0.3s ease;
+    }
+
+    .hamburger-menu:hover span {
+      background-color: var(--secondary);
+    }
+
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: -300px;
+      width: 280px;
+      height: 100vh;
+      background: linear-gradient(135deg, #1e2832 0%, #0f1419 100%);
+      border-right: 2px solid var(--primary);
+      transition: left 0.3s ease;
+      z-index: 1000;
+      overflow-y: auto;
+    }
+
+    .sidebar.active {
+      left: 0;
+    }
+
+    .sidebar-header {
+      padding: 20px;
+      background: rgba(74, 111, 165, 0.1);
+      border-bottom: 1px solid var(--primary);
+    }
+
+    .sidebar-header h3 {
+      color: var(--primary);
+      font-size: 1.2rem;
+      margin: 0;
+      text-align: center;
+    }
+
+    .nav-menu {
+      list-style: none;
+      padding: 20px 0;
+      margin: 0;
+    }
+
+    .nav-menu li {
+      margin: 0;
+    }
+
+    .nav-menu a {
+      display: block;
+      padding: 15px 25px;
+      color: #e0e6ed;
+      text-decoration: none;
+      font-size: 1rem;
+      transition: all 0.3s ease;
+      border-left: 3px solid transparent;
+    }
+
+    .nav-menu a:hover {
+      background: rgba(74, 111, 165, 0.1);
+      border-left-color: var(--primary);
+      color: var(--primary);
+    }
+
+    .overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 999;
+      display: none;
+    }
+
+    .overlay.active {
+      display: block;
+    }
+
+    /* Setting item styles for main page */
+    .setting-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: var(--spacing-md) 0;
+      border-bottom: 1px solid rgba(0,0,0,0.1);
+    }
+    
+    .setting-item:last-child {
+      border-bottom: none;
+    }
+    
+    .setting-label {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+      font-weight: 500;
+      color: var(--dark);
+    }
+    
+    .setting-control {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+    }
+
+    /* Toggle Switch Styles */
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 60px;
+      height: 34px;
+    }
+    
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      transition: 0.4s;
+      border-radius: 34px;
+    }
+    
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 26px;
+      width: 26px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      transition: 0.4s;
+      border-radius: 50%;
+    }
+    
+    input:checked + .slider {
+      background-color: var(--primary);
+    }
+    
+    input:checked + .slider:before {
+      transform: translateX(26px);
+    }
+
+    /* Status indicators */
+    .status-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--spacing-xs);
+      padding: var(--spacing-xs) var(--spacing-sm);
+      border-radius: var(--border-radius-sm);
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+    
+    .status-connected {
+      background-color: rgba(40, 167, 69, 0.1);
+      color: var(--success);
+    }
+    
+    .status-disconnected {
+      background-color: rgba(220, 53, 69, 0.1);
+      color: var(--danger);
+    }
+
+    /* Page-specific responsive enhancements */
+    .dashboard-grid {
+      display: grid;
+      gap: var(--spacing-lg);
+      grid-template-columns: 1fr;
+    }
+    
+    @media (min-width: 768px) {
+      .dashboard-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+    
+    @media (min-width: 992px) {
+      .dashboard-grid {
+        grid-template-columns: repeat(3, 1fr);
+      }
+    }
+    
+    .control-panel {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-md);
+    }
+    
+    @media (min-width: 576px) {
+      .control-panel {
+        flex-direction: row;
+        flex-wrap: wrap;
+      }
+      
+      .control-panel .btn {
+        flex: 1;
+        min-width: 140px;
+      }
+    }
+    
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: var(--spacing-sm) 0;
+      border-bottom: 1px solid rgba(0,0,0,0.1);
+    }
+    
+    .status-item:last-child {
+      border-bottom: none;
+    }
+    
+    .status-label {
+      font-weight: 500;
+      color: var(--dark);
+    }
+    
+    .status-value {
+      color: var(--primary);
+      font-weight: 600;
+    }
+
+    /* Mobile adjustments */
+    @media (max-width: 768px) {
+      .hamburger-menu {
+        top: 12px;
+        right: 15px;
+      }
+      
+      .sidebar {
+        width: 260px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .sidebar {
+        width: 100%;
+        left: -100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Responsive Navigation -->
+  <nav class="navbar">
+    <a href="#" class="navbar-brand" onclick="navigateWithToken('main')">
+      <img src="/img/logo.png" alt="Logo">
+      HeatBodyVentilator - <span id="navbar-device-name">%DEVICE_NAME%</span>
+    </a>
+    
+    <!-- Hamburger Menu Button -->
+    <div class="hamburger-menu" onclick="toggleSidebar()">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+  </nav>
+
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h3>HeatBodyVentilator - %DEVICE_NAME%</h3>
+    </div>
+    <ul class="nav-menu">
+      <li><a href="#" onclick="navigateWithToken('main')">🏠 Home</a></li>
+      <li><a href="#" onclick="navigateWithToken('setting')">⚙️ Einstellungen</a></li>
+      <li><a href="#" onclick="logout()">🚪 Logout</a></li>
+    </ul>
+  </div>
+
+  <!-- Overlay -->
+  <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    <div class="container">
+      <!-- System Status Grid -->
+      <div class="dashboard-grid">
+        <!-- Fan Status Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">Lüfter - Status</h3>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Lüfter-Geschwindigkeit</span>
+            <span class="status-value" id="fan-speed">--</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Aktuelle Temperatur</span>
+            <span class="status-value" id="temperature">--°C</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Zieltemperatur</span>
+            <span class="status-value" id="target-temp">30-80°C</span>
+          </div>
+        </div>
+        
+        <!-- LED Control Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">LED Steuerung</h3>
+          </div>
+          <div class="card-content">
+            <div class="setting-item">
+              <div class="setting-label">
+                <span>LED Status</span>
+              </div>
+              <div class="setting-control">
+                <span class="status-indicator" id="led-status-main">
+                  <i class="fas fa-circle" aria-hidden="true"></i>
+                  <span class="icon-fallback">⚫</span> Unbekannt
+                </span>
+              </div>
+            </div>
+            
+            <div class="setting-item">
+              <div class="setting-label">
+                <span>LED Schalter</span>
+              </div>
+              <div class="setting-control">
+                <label class="toggle-switch">
+                  <input type="checkbox" id="toggleLED-main" onchange="toggleLEDMain()">
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Additional Information Row -->
+      <div class="row">
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="footer-content">
+      <p>&copy; 2025 SmartHome-Assistant.info (Markus Reza Tain). Alle Rechte vorbehalten.</p>
+      <p class="footer-links">
+        <a href="https://github.com/smarthome-assistant/HeatBodyVentilator" onclick="showLicense(); return false;">Lizenz</a> | 
+        <a href="https://smarthome-assistant.info" target="_blank" rel="noopener">SmartHome-Assistant.info</a> | 
+        <a href="https://heatbodyventilator.smarthome-assistant.info" target="_blank" rel="noopener">Dokumentation</a>
+      </p>
+    </div>
+  </footer>
+
+  <script>
+    // Auto-refresh data every 30 seconds
+    setInterval(() => {
+      // Update Fan Status
+      fetch('/api/pwm-status?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          if (data.duty !== undefined) {
+            const percentage = Math.round((data.duty / 255) * 100);
+            document.getElementById('fan-speed').textContent = percentage + '%';
+          }
+        })
+        .catch(error => console.log('Fan status update failed:', error));
+      
+      // Update Temperature and other status
+      fetch('/api/kmeter-status?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          if (data.ready && data.temperature_celsius !== undefined) {
+            document.getElementById('temperature').textContent = data.temperature_celsius.toFixed(1) + '°C';
+          } else {
+            document.getElementById('temperature').textContent = '--°C';
+          }
+        })
+        .catch(error => console.log('Temperature update failed:', error));
+      
+      // Update Temperature Mapping Settings
+      fetch('/api/temp-mapping-status?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          if (data.startTemp !== undefined && data.maxTemp !== undefined) {
+            document.getElementById('target-temp').textContent = data.startTemp + '-' + data.maxTemp + '°C';
+          }
+        })
+        .catch(error => console.log('Temperature mapping update failed:', error));
+      
+      // Update general status for LED
+      fetch('/api/status?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          // Update LED status
+          if (data.led_state !== undefined) {
+            document.getElementById('toggleLED-main').checked = data.led_state;
+            updateLEDStatusMain(data.led_state);
+          }
+        })
+        .catch(error => console.log('Status update failed:', error));
+    }, 30000);
+
+    function toggleLEDMain() {
+      const isEnabled = document.getElementById('toggleLED-main').checked;
+      
+      fetch('/api/led-toggle?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'state=' + (isEnabled ? '1' : '0')
+      })
+        .then(response => response.text())
+        .then(data => {
+          if (data === 'OK') {
+            updateLEDStatusMain(isEnabled);
+            showNotification('LED erfolgreich ' + (isEnabled ? 'eingeschaltet' : 'ausgeschaltet'), 'success');
+          } else {
+            showNotification('Fehler beim Umschalten der LED', 'error');
+            // Revert toggle on error
+            document.getElementById('toggleLED-main').checked = !isEnabled;
+          }
+        })
+        .catch(error => {
+          showNotification('Netzwerkfehler', 'error');
+          // Revert toggle on error
+          document.getElementById('toggleLED-main').checked = !isEnabled;
+        });
+    }
+
+    function updateLEDStatusMain(isOn) {
+      const statusElement = document.getElementById('led-status-main');
+      if (isOn) {
+        statusElement.className = 'status-indicator status-connected';
+        statusElement.innerHTML = '<i class="fas fa-lightbulb" aria-hidden="true"></i><span class="icon-fallback">💡</span> Eingeschaltet';
+      } else {
+        statusElement.className = 'status-indicator status-disconnected';
+        statusElement.innerHTML = '<i class="fas fa-circle" aria-hidden="true"></i><span class="icon-fallback">⚫</span> Ausgeschaltet';
+      }
+    }
+
+    function toggleLED() {
+      fetch('/api/led-toggle?token=' + getToken(), { method: 'POST' })
+        .then(response => response.text())
+        .then(data => {
+          if (data === 'OK') {
+            showNotification('LED umgeschaltet', 'success');
+          } else {
+            showNotification('Fehler beim Umschalten der LED', 'error');
+          }
+        })
+        .catch(error => {
+          showNotification('Netzwerkfehler', 'error');
+        });
+    }
+    
+    function restartDevice() {
+      if (confirm('Sind Sie sicher, dass Sie das Gerät neu starten möchten?')) {
+        fetch('/api/restart?token=' + getToken(), { method: 'POST' })
+          .then(() => {
+            showNotification('Gerät wird neu gestartet...', 'info');
+            setTimeout(() => {
+              location.reload();
+            }, 5000);
+          })
+          .catch(error => {
+            showNotification('Restart failed', 'error');
+          });
+      }
+    }
+    
+    function showNotification(message, type = 'info') {
+      const notification = document.createElement('div');
+      notification.style.cssText = `
+        position: fixed;
+        top: 80px;
+        right: 20px;
+        background: ${type === 'success' ? 'var(--success)' : type === 'error' ? 'var(--danger)' : 'var(--primary)'};
+        color: white;
+        padding: 12px 20px;
+        border-radius: 4px;
+        box-shadow: var(--shadow);
+        z-index: 9999;
+        transition: all 0.3s ease;
+      `;
+      notification.textContent = message;
+      document.body.appendChild(notification);
+      
+      setTimeout(() => {
+        notification.style.opacity = '0';
+        setTimeout(() => {
+          document.body.removeChild(notification);
+        }, 300);
+      }, 3000);
+    }
+
+    function getToken() {
+      const urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get('token') || '';
+    }
+
+    function navigateWithToken(page) {
+      const token = getToken();
+      if (token) {
+        window.location.href = page + '?token=' + token;
+      } else {
+        window.location.href = page;
+      }
+    }
+
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      const overlay = document.getElementById('overlay');
+      sidebar.classList.toggle('active');
+      overlay.classList.toggle('active');
+    }
+
+    function logout() {
+      if (confirm('Sind Sie sicher, dass Sie sich abmelden möchten?')) {
+        window.location.href = 'login.html';
+      }
+    }
+    
+    // Footer functions
+    function showLicense() {
+      const licenseText = `HeatBodyVentilator - Custom Source-Available License
+
+Copyright (c) 2025 SmartHome-Assistant (Markus Reza Tain)
+
+Nutzungsbedingungen:
+- Dieser Code steht unter einer benutzerdefinierten Lizenz
+- Kommerzielle Nutzung ist ohne ausdrückliche Genehmigung nicht gestattet
+- Modifikationen dürfen nicht ohne Erlaubnis veröffentlicht werden
+- Bei Nutzung muss eine Namensnennung erfolgen
+
+Für kommerzielle Nutzungsrechte kontaktieren Sie bitte:
+SmartHome-Assistant (Markus Reza Tain)`;
+      
+      alert(licenseText);
+    }
+    
+    // Load initial status when page loads
+    document.addEventListener('DOMContentLoaded', function() {
+      // Load fan status immediately
+      fetch('/api/pwm-status?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          if (data.duty !== undefined) {
+            const percentage = Math.round((data.duty / 255) * 100);
+            document.getElementById('fan-speed').textContent = percentage + '%';
+          }
+        })
+        .catch(error => console.log('Initial fan status load failed:', error));
+      
+      // Load temperature immediately
+      fetch('/api/kmeter-status?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          if (data.ready && data.temperature_celsius !== undefined) {
+            document.getElementById('temperature').textContent = data.temperature_celsius.toFixed(1) + '°C';
+          } else {
+            document.getElementById('temperature').textContent = '--°C';
+          }
+        })
+        .catch(error => console.log('Initial temperature load failed:', error));
+      
+      // Load temperature mapping settings immediately
+      fetch('/api/temp-mapping-status?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          if (data.startTemp !== undefined && data.maxTemp !== undefined) {
+            document.getElementById('target-temp').textContent = data.startTemp + '-' + data.maxTemp + '°C';
+          }
+        })
+        .catch(error => console.log('Initial temperature mapping load failed:', error));
+      
+      // Load general status immediately
+      fetch('/api/status?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          if (data.led_state !== undefined) {
+            document.getElementById('toggleLED-main').checked = data.led_state;
+            updateLEDStatusMain(data.led_state);
+          }
+        })
+        .catch(error => console.log('Initial status load failed:', error));
+    });
+
+    // Add keyboard navigation support
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('overlay');
+        if (sidebar.classList.contains('active')) {
+          sidebar.classList.remove('active');
+          overlay.classList.remove('active');
+        }
+      }
+    });
+  </script>
+</body>
+</html>

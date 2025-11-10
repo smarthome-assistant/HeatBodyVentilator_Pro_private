@@ -1,0 +1,161 @@
+CUSTOM SOURCE-AVAILABLE LICENSE
+
+Copyright (c) 2025 SmartHome-Assistant.info (Markus Reza Tain)
+All rights reserved.
+
+=============================================================================
+LIZENZVEREINBARUNG FÜR ESP32 SMART HOME SERVER
+=============================================================================
+
+Dieses Projekt ("Software") wird unter den folgenden Bedingungen zur Verfügung 
+gestellt. Durch das Herunterladen, Kopieren, Verwenden oder Modifizieren der 
+Software erklären Sie sich mit diesen Bedingungen einverstanden.
+
+WICHTIG: Diese Lizenz gilt NUR für den eigenen Programmcode dieses Projekts
+(Dateien in /src und /data). Verwendete Open-Source-Bibliotheken (FastLED,
+ArduinoJson, PubSubClient, M5Unit-KMeterISO) stehen unter eigenen Lizenzen.
+Siehe THIRD_PARTY_LICENSES.md für Details.
+
+-----------------------------------------------------------------------------
+1. ERLAUBTE NUTZUNG
+-----------------------------------------------------------------------------
+
+Sie dürfen:
+✓ Die Software für PRIVATE, NICHT-KOMMERZIELLE Zwecke verwenden
+✓ Die Software für Bildungs- und Lernzwecke nutzen
+✓ Die Software auf Ihren eigenen Geräten installieren und ausführen
+✓ Den Quellcode studieren und zu Lernzwecken ansehen
+
+-----------------------------------------------------------------------------
+2. EINGESCHRÄNKTE RECHTE
+-----------------------------------------------------------------------------
+
+Sie dürfen NICHT ohne ausdrückliche schriftliche Zustimmung des Urhebers:
+✗ Die Software oder modifizierte Versionen kommerziell nutzen
+✗ Die Software oder Teile davon verkaufen oder vermieten
+✗ Modifizierte Versionen der Software veröffentlichen oder verteilen
+✗ Die Software in kommerzielle Produkte oder Dienstleistungen integrieren
+✗ Die Software als Grundlage für kommerzielle Projekte verwenden
+
+-----------------------------------------------------------------------------
+3. VERÖFFENTLICHUNG UND WEITERGABE
+-----------------------------------------------------------------------------
+
+Die Veröffentlichung oder Verbreitung von modifiziertem Code erfordert:
+• Ausdrückliche schriftliche Zustimmung des ursprünglichen Urhebers
+• Nennung des ursprünglichen Urhebers (SmartHome-Assistant.info / Markus Reza Tain)
+• Beibehaltung dieser Lizenzvereinbarung
+• Kennzeichnung aller vorgenommenen Änderungen
+
+-----------------------------------------------------------------------------
+4. KOMMERZIELLE NUTZUNG
+-----------------------------------------------------------------------------
+
+Jegliche kommerzielle Nutzung bedarf einer separaten kommerziellen Lizenz.
+Für Anfragen bezüglich kommerzieller Nutzung kontaktieren Sie bitte:
+• GitHub: https://github.com/smarthome-assistant
+• Email: markus.reza.tain@smarthome-assistant.info
+
+Kommerzielle Nutzung umfasst, ist aber nicht beschränkt auf:
+• Verwendung in kommerziellen Produkten oder Dienstleistungen
+• Integration in kostenpflichtige Systeme
+• Nutzung durch Unternehmen oder Organisation mit kommerziellem Zweck
+• Verkauf von Geräten mit dieser Software
+
+-----------------------------------------------------------------------------
+5. URHEBERRECHTSHINWEIS
+-----------------------------------------------------------------------------
+
+Bei jeglicher erlaubter Nutzung oder Weitergabe muss folgender 
+Urheberrechtshinweis sichtbar enthalten sein:
+
+    "Basiert auf HeatBodyVentilator
+     Copyright (c) 2025 SmartHome-Assistant.info (Markus Reza Tain)
+     https://github.com/smarthome-assistant"
+
+-----------------------------------------------------------------------------
+6. BEITRÄGE (CONTRIBUTIONS)
+-----------------------------------------------------------------------------
+
+Beiträge zu diesem Projekt (Pull Requests, Issues, etc.) werden begrüßt.
+Mit der Einreichung eines Beitrags:
+• Bestätigen Sie, dass Sie die Rechte an Ihrem Beitrag besitzen
+• Lizenzieren Sie Ihren Beitrag unter dieser Lizenz für die Verwendung in 
+  diesem Projekt
+• Erlauben Sie dem Projekt-Urheber, Ihren Beitrag zu nutzen und zu integrieren
+• BEHALTEN Sie jedoch Ihr Urheberrecht an Ihrem ursprünglichen Beitrag
+• Stimmen Sie zu, in der CONTRIBUTORS.md Datei als Mitwirkender genannt zu werden
+
+Der Projekt-Urheber behält sich das Recht vor, die Lizenz für zukünftige 
+Versionen anzupassen, wobei bereits veröffentlichte Versionen unter ihrer 
+ursprünglichen Lizenz bleiben.
+
+-----------------------------------------------------------------------------
+7. GEWÄHRLEISTUNGSAUSSCHLUSS
+-----------------------------------------------------------------------------
+
+DIE SOFTWARE WIRD "WIE BESEHEN" OHNE JEGLICHE AUSDRÜCKLICHE ODER STILLSCHWEIGENDE 
+GEWÄHRLEISTUNG ZUR VERFÜGUNG GESTELLT, EINSCHLIESSLICH, ABER NICHT BESCHRÄNKT 
+AUF GEWÄHRLEISTUNGEN DER MARKTGÄNGIGKEIT, EIGNUNG FÜR EINEN BESTIMMTEN ZWECK 
+UND NICHTVERLETZUNG VON RECHTEN DRITTER.
+
+IN KEINEM FALL HAFTEN DIE AUTOREN ODER URHEBERRECHTSINHABER FÜR ANSPRÜCHE, 
+SCHÄDEN ODER ANDERE VERPFLICHTUNGEN, OB IN EINER VERTRAGS- ODER HAFTUNGSKLAGE, 
+UNERLAUBTER HANDLUNG ODER ANDERWEITIG, DIE SICH AUS ODER IN VERBINDUNG MIT DER 
+SOFTWARE ODER DER NUTZUNG ODER ANDEREN GESCHÄFTEN MIT DER SOFTWARE ERGEBEN.
+
+-----------------------------------------------------------------------------
+8. HAFTUNGSBESCHRÄNKUNG
+-----------------------------------------------------------------------------
+
+Die Nutzung erfolgt auf eigenes Risiko. Der Urheber übernimmt keine Haftung für:
+• Schäden an Hardware oder Geräten
+• Datenverlust oder Datenschutzverletzungen
+• Funktionsstörungen oder Ausfälle
+• Folgeschäden jeglicher Art
+
+-----------------------------------------------------------------------------
+9. BEENDIGUNG DER LIZENZ
+-----------------------------------------------------------------------------
+
+Diese Lizenz endet automatisch bei Verstoß gegen eine der Bedingungen.
+Bei Beendigung müssen Sie:
+• Die Nutzung der Software einstellen
+• Alle Kopien der Software löschen
+• Alle darauf basierenden Projekte einstellen
+• Schadensersatz leisten
+
+-----------------------------------------------------------------------------
+11. VERWENDETE OPEN-SOURCE-BIBLIOTHEKEN
+-----------------------------------------------------------------------------
+
+Dieses Projekt verwendet folgende Open-Source-Bibliotheken mit eigenen Lizenzen:
+
+• FastLED (MIT License) - LED-Steuerung
+• ArduinoJson (MIT License) - JSON-Verarbeitung  
+• PubSubClient (MIT License) - MQTT-Client
+• M5Unit-KMeterISO (MIT License) - Temperatursensor
+
+Diese Bibliotheken unterliegen NICHT dieser Lizenz, sondern ihren eigenen
+MIT-Lizenzen, die kommerzielle Nutzung erlauben.
+
+Vollständige Lizenztexte: siehe THIRD_PARTY_LICENSES.md
+
+-----------------------------------------------------------------------------
+12. KONTAKT FÜR LIZENZANFRAGEN
+-----------------------------------------------------------------------------
+
+Für Anfragen bezüglich:
+• Kommerzieller Nutzung
+• Veröffentlichung modifizierter Versionen
+• Sondervereinbarungen
+
+Kontaktieren Sie:
+GitHub: https://github.com/smarthome-assistant
+Repository: https://github.com/smarthome-assistant/HeatBodyVentilator
+
+=============================================================================
+
+Version: 1.0
+Datum: 24. Oktober 2025
+Urheber: SmartHome-Assistant.info (Markus Reza Tain)

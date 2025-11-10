@@ -1,0 +1,2164 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, maximum-scale=5.0">
+  <title>HeatBodyVentilator / %DEVICE_NAME% - Einstellungen</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+  <style>
+    /* Settings-specific responsive styles */
+    .settings-grid {
+      display: grid;
+      gap: var(--spacing-lg);
+      grid-template-columns: 1fr;
+    }
+    
+    @media (min-width: 768px) {
+      .settings-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+    
+    @media (min-width: 1200px) {
+      .settings-grid {
+        grid-template-columns: repeat(3, 1fr);
+      }
+    }
+    
+    .setting-group {
+      margin-bottom: var(--spacing-lg);
+    }
+    
+    /* Button separator in setting groups */
+    .btn-separator {
+      height: 1px;
+      background: linear-gradient(to right, transparent, rgba(0,0,0,0.1), transparent);
+      margin: var(--spacing-md) 0;
+      border: none;
+    }
+    
+    .setting-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: var(--spacing-md) 0;
+      border-bottom: 1px solid rgba(0,0,0,0.1);
+    }
+    
+    .setting-item:last-child {
+      border-bottom: none;
+    }
+    
+    .setting-label {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+      font-weight: 500;
+      color: var(--dark);
+    }
+    
+    .setting-control {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+    }
+    
+    /* Toggle Switch Styles */
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 60px;
+      height: 34px;
+    }
+    
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      transition: 0.4s;
+      border-radius: 34px;
+    }
+    
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 26px;
+      width: 26px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      transition: 0.4s;
+      border-radius: 50%;
+    }
+    
+    input:checked + .slider {
+      background-color: var(--primary);
+    }
+    
+    input:checked + .slider:before {
+      transform: translateX(26px);
+    }
+    
+    /* Modal Styles */
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 2000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0,0,0,0.5);
+    }
+    
+    .modal-content {
+      background-color: white;
+      margin: 5% auto;
+      padding: var(--spacing-xl);
+      border-radius: var(--border-radius-lg);
+      width: 90%;
+      max-width: 500px;
+      max-height: 80vh;
+      overflow-y: auto;
+      position: relative;
+    }
+    
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: var(--spacing-lg);
+      padding-bottom: var(--spacing-md);
+      border-bottom: 1px solid rgba(0,0,0,0.1);
+    }
+    
+    .close {
+      color: #aaa;
+      font-size: 28px;
+      font-weight: bold;
+      cursor: pointer;
+      line-height: 1;
+    }
+    
+    .close:hover {
+      color: var(--danger);
+    }
+    
+    /* Icon fallback */
+    .icon-fallback {
+      font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+    }
+    
+    /* Status indicators */
+    .status-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--spacing-xs);
+      padding: var(--spacing-xs) var(--spacing-sm);
+      border-radius: var(--border-radius-sm);
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+    
+    .status-connected {
+      background-color: rgba(40, 167, 69, 0.1);
+      color: var(--success);
+    }
+    
+    .status-disconnected {
+      background-color: rgba(220, 53, 69, 0.1);
+      color: var(--danger);
+    }
+    
+    .status-unknown {
+      background-color: rgba(108, 117, 125, 0.1);
+      color: #6c757d;
+    }
+    
+    /* Form groups in modals */
+    .form-row {
+      display: flex;
+      gap: var(--spacing-md);
+      margin-bottom: var(--spacing-md);
+    }
+    
+    .form-row .form-group {
+      flex: 1;
+      margin-bottom: 0;
+    }
+    
+    /* Network list styles */
+    .network-list {
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid #ddd;
+      border-radius: var(--border-radius-sm);
+      margin-bottom: var(--spacing-md);
+    }
+    
+    .network-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: var(--spacing-md);
+      border-bottom: 1px solid #eee;
+      cursor: pointer;
+      transition: background-color var(--transition-fast);
+    }
+    
+    .network-item:last-child {
+      border-bottom: none;
+    }
+    
+    .network-item:hover {
+      background-color: var(--light);
+    }
+    
+    .network-info {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-xs);
+    }
+    
+    .network-name {
+      font-weight: 500;
+      color: var(--dark);
+    }
+    
+    .network-details {
+      font-size: 0.875rem;
+      color: #6c757d;
+    }
+    
+    .signal-strength {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-xs);
+    }
+    
+    /* Responsive adjustments for mobile */
+    @media (max-width: 768px) {
+      .modal-content {
+        margin: 10% auto;
+        width: 95%;
+        padding: var(--spacing-lg);
+      }
+      
+      .form-row {
+        flex-direction: column;
+        gap: 0;
+      }
+      
+      .form-row .form-group {
+        margin-bottom: var(--spacing-md);
+      }
+      
+      .setting-item {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: var(--spacing-sm);
+      }
+      
+      .setting-control {
+        width: 100%;
+        justify-content: flex-end;
+      }
+    }
+    
+    /* PWM Range Slider Styling */
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 120px;
+      height: 6px;
+      border-radius: 3px;
+      background: #ddd;
+      outline: none;
+      opacity: 0.7;
+      transition: opacity 0.2s;
+    }
+    
+    input[type="range"]:hover {
+      opacity: 1;
+    }
+    
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--primary);
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    
+    input[type="range"]::-webkit-slider-thumb:hover {
+      background: var(--secondary);
+    }
+    
+    input[type="range"]::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--primary);
+      cursor: pointer;
+      border: none;
+    }
+
+    /* Hamburger Menu Styles */
+    .hamburger-menu {
+      position: fixed;
+      top: 15px;
+      right: 20px;
+      width: 35px;
+      height: 30px;
+      cursor: pointer;
+      z-index: 1001;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .hamburger-menu span {
+      width: 100%;
+      height: 3px;
+      background-color: var(--primary);
+      border-radius: 2px;
+      transition: all 0.3s ease;
+    }
+
+    .hamburger-menu:hover span {
+      background-color: var(--secondary);
+    }
+
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: -300px;
+      width: 280px;
+      height: 100vh;
+      background: linear-gradient(135deg, #1e2832 0%, #0f1419 100%);
+      border-right: 2px solid var(--primary);
+      transition: left 0.3s ease;
+      z-index: 1000;
+      overflow-y: auto;
+    }
+
+    .sidebar.active {
+      left: 0;
+    }
+
+    .sidebar-header {
+      padding: 20px;
+      background: rgba(74, 111, 165, 0.1);
+      border-bottom: 1px solid var(--primary);
+    }
+
+    .sidebar-header h3 {
+      color: var(--primary);
+      font-size: 1.2rem;
+      margin: 0;
+      text-align: center;
+    }
+
+    .nav-menu {
+      list-style: none;
+      padding: 20px 0;
+      margin: 0;
+    }
+
+    .nav-menu li {
+      margin: 0;
+    }
+
+    .nav-menu a {
+      display: block;
+      padding: 15px 25px;
+      color: #e0e6ed;
+      text-decoration: none;
+      font-size: 1rem;
+      transition: all 0.3s ease;
+      border-left: 3px solid transparent;
+    }
+
+    .nav-menu a:hover {
+      background: rgba(74, 111, 165, 0.1);
+      border-left-color: var(--primary);
+      color: var(--primary);
+    }
+
+    .overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 999;
+      display: none;
+    }
+
+    .overlay.active {
+      display: block;
+    }
+
+    /* Mobile adjustments */
+    @media (max-width: 768px) {
+      .hamburger-menu {
+        top: 12px;
+        right: 15px;
+      }
+      
+      .sidebar {
+        width: 260px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .sidebar {
+        width: 100%;
+        left: -100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Responsive Navigation -->
+  <nav class="navbar">
+    <a href="#" class="navbar-brand" onclick="navigateWithToken('main')">
+      <img src="/img/logo.png" alt="Logo">
+      HeatBodyVentilator - <span id="navbar-device-name">%DEVICE_NAME%</span>
+    </a>
+    
+    <!-- Hamburger Menu Button -->
+    <div class="hamburger-menu" onclick="toggleSidebar()">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
+  </nav>
+
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h3 id="sidebar-title">HeatBodyVentilator - %DEVICE_NAME%</h3>
+    </div>
+    <ul class="nav-menu">
+      <li><a href="#" onclick="navigateWithToken('main')">🏠 Home</a></li>
+      <li><a href="#" onclick="navigateWithToken('setting')">⚙️ Einstellungen</a></li>
+      <li><a href="#" onclick="logout()">🚪 Abmelden</a></li>
+    </ul>
+  </div>
+
+  <!-- Overlay -->
+  <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    <div class="container">
+      <h1 class="text-center">Geräteeinstellungen</h1>
+
+      <!-- Settings Grid -->
+      <div class="settings-grid">
+        
+        <!-- WiFi Settings Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-wifi" aria-hidden="true"></i>
+              <span class="icon-fallback">📶</span> WiFi Einstellungen
+            </h3>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Aktuelles Netzwerk</span>
+            </div>
+            <div class="setting-control">
+              <span class="status-indicator status-connected" id="wifi-status">
+                <i class="fas fa-check-circle"></i>
+                <span class="icon-fallback">✅</span>
+                <span id="wifi-ssid-display">Verbunden</span>
+              </span>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>IP-Adresse</span>
+            </div>
+            <div class="setting-control">
+              <span id="wifi-ip">%WIFI_IP%</span>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>MAC-Adresse</span>
+            </div>
+            <div class="setting-control">
+              <span id="wifi-mac">%WIFI_MAC%</span>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Signalstärke</span>
+            </div>
+            <div class="setting-control">
+              <span id="wifi-signal">%WIFI_RSSI% dBm</span>
+            </div>
+          </div>
+          
+          <div class="setting-group">
+            <button class="btn btn-primary btn-block" onclick="openWifiModal()">
+              <i class="fas fa-cog" aria-hidden="true"></i>
+              <span class="icon-fallback">⚙️</span> WiFi Einstellungen
+            </button>
+            <button class="btn btn-secondary btn-block" onclick="disconnectWifi()">
+              <i class="fas fa-unlink" aria-hidden="true"></i>
+              <span class="icon-fallback">🔓</span> Trennen
+            </button>
+          </div>
+        </div>
+
+        <!-- Access Point Settings Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-broadcast-tower" aria-hidden="true"></i>
+              <span class="icon-fallback">📡</span> Access Point
+            </h3>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Einschalten Access Point</span>
+              <small class="d-block" style="color: #6c757d;">Geräteeinrichtungsmodus aktivieren</small>
+            </div>
+            <div class="setting-control">
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggleAP" onchange="toggleAP()">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Notfallmodus</span>
+              <small class="d-block" style="color: #6c757d;">Automatisch aktivieren, wenn WiFi fehlschlägt</small>
+            </div>
+            <div class="setting-control">
+              <span class="status-indicator status-connected">
+                <i class="fas fa-shield-alt"></i>
+                <span class="icon-fallback">🛡️</span> Aktiv
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- MQTT Settings Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-exchange-alt" aria-hidden="true"></i>
+              <span class="icon-fallback">🔄</span> MQTT Einstellungen
+            </h3>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Verbindungsstatus</span>
+            </div>
+            <div class="setting-control">
+              <span class="status-indicator" id="mqtt-status">
+                <i class="fas fa-circle"></i>
+                <span class="icon-fallback">⚫</span> Unbekannt
+              </span>
+            </div>
+          </div>
+          
+          <div class="setting-group">
+            <button class="btn btn-primary btn-block" onclick="openMqttModal()">
+              <i class="fas fa-cog" aria-hidden="true"></i>
+              <span class="icon-fallback">⚙️</span> MQTT Konfigurieren
+            </button>
+            <button class="btn btn-success btn-block" onclick="testMqttConnection()">
+              <i class="fas fa-play" aria-hidden="true"></i>
+              <span class="icon-fallback">▶️</span> Verbindung Testen
+            </button>
+          </div>
+        </div>
+
+        <!-- LED Settings Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-lightbulb" aria-hidden="true"></i>
+              <span class="icon-fallback">💡</span> LED Einstellungen
+            </h3>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>LED Status</span>
+              <small class="d-block" style="color: #6c757d;">Aktuelle LED-Anzeige</small>
+            </div>
+            <div class="setting-control">
+              <span class="status-indicator" id="led-status">
+                <i class="fas fa-circle" aria-hidden="true"></i>
+                <span class="icon-fallback">⚫</span> Unbekannt
+              </span>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>LED Steuerung</span>
+            </div>
+            <div class="setting-control">
+              <label class="toggle-switch">
+                <input type="checkbox" id="toggleLED" onchange="toggleLED()">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Auto Discovery</span>
+              <small class="d-block" style="color: #6c757d;">Home Assistant Integration</small>
+            </div>
+            <div class="setting-control">
+              <span class="status-indicator status-connected">
+                <i class="fas fa-home" aria-hidden="true"></i>
+                <span class="icon-fallback">🏠</span> Aktiv
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fan Control Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-fan" aria-hidden="true"></i>
+              <span class="icon-fallback">�</span> Lüfter-Steuerung
+            </h3>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Lüfter Status</span>
+              <small class="d-block" style="color: #6c757d;">Automatische temperaturbasierte Steuerung</small>
+            </div>
+            <div class="setting-control">
+              <span class="status-indicator status-connected" id="pwm-status">
+                <i class="fas fa-fan" aria-hidden="true"></i>
+                <span class="icon-fallback">🌀</span> Aktiv
+              </span>
+            </div>
+          </div>
+          
+          <div class="btn-separator"></div>
+          
+          <!-- Temperatur-Mapping Einstellungen -->
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Starttemperatur</span>
+              <small class="d-block" style="color: #6c757d;">Temperatur bei der der Lüfter anläuft (°C)</small>
+            </div>
+            <div class="setting-control">
+              <input type="number" id="start-temp" min="0" max="200" value="30" 
+                     style="width: 80px;" onchange="updateTempMapping()">
+              <span style="margin-left: 5px;">°C</span>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Maximaltemperatur</span>
+              <small class="d-block" style="color: #6c757d;">Temperatur bei der der Lüfter Vollgas läuft (°C)</small>
+            </div>
+            <div class="setting-control">
+              <input type="number" id="max-temp" min="0" max="200" value="80" 
+                     style="width: 80px;" onchange="updateTempMapping()">
+              <span style="margin-left: 5px;">°C</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- KMeter-ISO Temperature Sensor Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-thermometer-half" aria-hidden="true"></i>
+              <span class="icon-fallback">🌡️</span> KMeter-ISO Sensor
+            </h3>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Sensor Status</span>
+              <small class="d-block" style="color: #6c757d;">M5Stack KMeter-ISO Thermoelement</small>
+            </div>
+            <div class="setting-control">
+              <span class="status-indicator" id="kmeter-status">
+                <i class="fas fa-circle" aria-hidden="true"></i>
+                <span class="icon-fallback">⚪</span> <span id="kmeter-status-text">Initialisiere...</span>
+              </span>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Thermoelement Temperatur</span>
+              <small class="d-block" style="color: #6c757d;">Externe Temperatursonde</small>
+            </div>
+            <div class="setting-control">
+              <span id="kmeter-temp-celsius" style="font-weight: bold; color: #007bff;">--°C</span>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Interne Chip Temperatur</span>
+              <small class="d-block" style="color: #6c757d;">Sensor-Chip Referenz</small>
+            </div>
+            <div class="setting-control">
+              <span id="kmeter-internal-temp" style="font-weight: bold; color: #28a745;">--°C</span>
+            </div>
+          </div>
+          
+          <div class="btn-separator"></div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Aktualisierungsintervall</span>
+              <small class="d-block" style="color: #6c757d;">Messfrequenz einstellen</small>
+            </div>
+            <div class="setting-control">
+              <select id="kmeter-interval" onchange="updateKMeterInterval()">
+                <option value="500">500ms</option>
+                <option value="1000" selected>1 Sekunde</option>
+                <option value="2000">2 Sekunden</option>
+                <option value="5000">5 Sekunden</option>
+                <option value="10000">10 Sekunden</option>
+              </select>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>I2C Adresse</span>
+              <small class="d-block" style="color: #6c757d;">Sensor I2C-Konfiguration</small>
+            </div>
+            <div class="setting-control">
+              <span id="kmeter-i2c-addr" style="font-family: monospace;">0x66</span>
+              <button class="btn btn-sm btn-secondary" onclick="changeKMeterI2C()">
+                <i class="fas fa-edit" aria-hidden="true"></i> Ändern
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Device Security Settings Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-shield-alt" aria-hidden="true"></i>
+              <span class="icon-fallback">🔒</span> Gerätesicherheit
+            </h3>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Login-Sicherheit</span>
+              <small class="d-block" style="color: #6c757d;">Aktuelles Passwort ändern</small>
+            </div>
+            <div class="setting-control">
+              <button class="btn btn-primary" onclick="openPasswordModal()">
+                <i class="fas fa-key" aria-hidden="true"></i>
+                <span class="icon-fallback">🔑</span> Passwort Ändern
+              </button>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Letzte Passwort-Änderung</span>
+            </div>
+            <div class="setting-control">
+              <span id="last-password-change">%LAST_PASSWORD_CHANGE%</span>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Session-Timeout</span>
+              <small class="d-block" style="color: #6c757d;">Automatische Abmeldung nach Inaktivität</small>
+            </div>
+            <div class="setting-control">
+              <span class="status-indicator status-connected">
+                <i class="fas fa-clock" aria-hidden="true"></i>
+                <span class="icon-fallback">⏰</span> 30 Minuten
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- System Settings Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-microchip" aria-hidden="true"></i>
+              <span class="icon-fallback">💻</span> System
+            </h3>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Firmware Version</span>
+            </div>
+            <div class="setting-control">
+              <span id="firmware-version">--</span>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Uptime</span>
+            </div>
+            <div class="setting-control">
+              <span id="uptime">%UPTIME%</span>
+            </div>
+          </div>
+          
+          <div class="setting-group">
+            <button class="btn btn-primary btn-block" onclick="openFirmwareModal()">
+              <i class="fas fa-upload" aria-hidden="true"></i>
+              <span class="icon-fallback">📤</span> Firmware Hochladen
+            </button>
+            
+            <div class="btn-separator"></div>
+            
+            <button class="btn btn-warning btn-block" onclick="restartDevice()">
+              <i class="fas fa-redo" aria-hidden="true"></i>
+              <span class="icon-fallback">🔄</span> Restart Device
+            </button>
+            
+            <div class="btn-separator"></div>
+            
+            <button class="btn btn-danger btn-block" onclick="factoryReset()">
+              <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+              <span class="icon-fallback">⚠️</span> Factory Reset
+            </button>
+          </div>
+        </div>
+
+        <!-- Device Information Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">
+              <i class="fas fa-info-circle" aria-hidden="true"></i>
+              <span class="icon-fallback">ℹ️</span> Geräteinformationen
+            </h3>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Gerätetyp</span>
+            </div>
+            <div class="setting-control">
+              <span>M5Stack Atom</span>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Gerätename</span>
+            </div>
+            <div class="setting-control">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <input type="text" id="device-name" value="" placeholder="Enter device name" 
+                       style="flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                <button class="btn-primary" onclick="saveDeviceName()" style="padding: 8px 16px; white-space: nowrap;">Save</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="footer-content">
+      <p>&copy; 2025 SmartHome-Assistant.info (Markus Reza Tain). Alle Rechte vorbehalten.</p>
+      <p class="footer-links">
+        <a href="https://github.com/smarthome-assistant/HeatBodyVentilator" onclick="showLicense(); return false;">Lizenz</a> | 
+        <a href="https://smarthome-assistant.info" target="_blank" rel="noopener">SmartHome-Assistant.info</a> | 
+        <a href="https://heatbodyventilator.smarthome-assistant.info" target="_blank" rel="noopener">Dokumentation</a>
+      </p>
+    </div>
+  </footer>
+
+  <!-- WiFi Setup Modal -->
+  <div id="wifiModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Wifi Netzwerke</h3>
+        <span class="close" onclick="closeWifiModal()">&times;</span>
+      </div>
+      
+      <!-- Available Networks Section - moved to top -->
+      <div class="form-group">
+        <h4>Verfügbare Netzwerke</h4>
+        <button type="button" class="btn btn-primary btn-block" onclick="scanWifi()">
+          <i class="fas fa-sync" aria-hidden="true"></i>
+          <span class="icon-fallback">🔄</span> Netzwerke Aktualisieren
+        </button>
+        <div id="networkList" class="network-list">
+          <div class="text-center p-3" style="color: #6c757d;">Klicken Sie auf "Netzwerke Aktualisieren", um nach verfügbaren Wifi-Netzwerken zu suchen</div>
+        </div>
+      </div>
+      
+      <!-- Manual WiFi Configuration -->
+      <div style="margin-top: 20px; border-top: 1px solid #ddd; padding-top: 20px;">
+        <h4>Manuelle Konfiguration</h4>
+        <form id="wifiForm">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="ssid">Netzwerkname (SSID)</label>
+              <input type="text" id="ssid" class="form-control" required placeholder="Geben Sie den WiFi-Netzwerknamen ein">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="password">Passwort</label>
+              <input type="password" id="password" class="form-control" placeholder="Geben Sie das WiFi-Passwort ein">
+            </div>
+          </div>
+          
+          <div class="form-row">
+            <button type="submit" class="btn btn-success">
+              <i class="fas fa-link" aria-hidden="true"></i>
+              <span class="icon-fallback">🔗</span> Verbinden
+            </button>
+            <button type="button" class="btn btn-warning" onclick="clearWifiSettings()">
+              <i class="fas fa-trash" aria-hidden="true"></i>
+              <span class="icon-fallback">🗑️</span> Einstellungen zurücksetzen
+            </button>
+            <button type="button" class="btn btn-secondary" onclick="closeWifiModal()">
+              Abbrechen
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- MQTT Settings Modal -->
+  <div id="mqttModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>MQTT Konfiguration</h3>
+        <span class="close" onclick="closeMqttModal()">&times;</span>
+      </div>
+      
+      <form id="mqttForm">
+        <div class="form-group">
+          <label class="form-label" for="mqttServer">MQTT Server</label>
+          <input type="text" id="mqttServer" class="form-control" placeholder="192.168.1.100" value="%MQTT_SERVER%">
+        </div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="mqttPort">Port</label>
+            <input type="number" id="mqttPort" class="form-control" value="%MQTT_PORT%" min="1" max="65535">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="mqttUser">Benutzername</label>
+            <input type="text" id="mqttUser" class="form-control" value="%MQTT_USER%">
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label class="form-label" for="mqttPass">Passwort</label>
+          <input type="password" id="mqttPass" class="form-control">
+        </div>
+        
+        <div class="form-row">
+          <button type="submit" class="btn btn-success">
+            <i class="fas fa-save" aria-hidden="true"></i>
+            <span class="icon-fallback">💾</span> Einstellungen speichern
+          </button>
+          <button type="button" class="btn btn-secondary" onclick="closeMqttModal()">
+            Abbrechen
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Password Change Modal -->
+  <div id="passwordModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Passwort Ändern</h3>
+        <span class="close" onclick="closePasswordModal()">&times;</span>
+      </div>
+      
+      <form id="passwordForm">
+        <div class="form-group">
+          <label class="form-label" for="currentPassword">Aktuelles Passwort</label>
+          <input type="password" id="currentPassword" class="form-control" required placeholder="Geben Sie Ihr aktuelles Passwort ein">
+        </div>
+        
+        <div class="form-group">
+          <label class="form-label" for="newPassword">Neues Passwort</label>
+          <input type="password" id="newPassword" class="form-control" required placeholder="Geben Sie ein neues Passwort ein" minlength="6">
+          <small class="form-text text-muted">Mindestens 6 Zeichen erforderlich</small>
+        </div>
+        
+        <div class="form-group">
+          <label class="form-label" for="confirmPassword">Passwort Bestätigen</label>
+          <input type="password" id="confirmPassword" class="form-control" required placeholder="Bestätigen Sie das neue Passwort">
+        </div>
+        
+        <div class="form-row">
+          <button type="submit" class="btn btn-success">
+            <i class="fas fa-save" aria-hidden="true"></i>
+            <span class="icon-fallback">💾</span> Passwort Ändern
+          </button>
+          <button type="button" class="btn btn-secondary" onclick="closePasswordModal()">
+            Abbrechen
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Firmware Update Modal -->
+  <div id="firmwareModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Firmware Update</h3>
+        <span class="close" onclick="closeFirmwareModal()">&times;</span>
+      </div>
+      
+      <div id="firmware-upload-section">
+        <div class="form-group">
+          <label class="form-label" for="firmwareFile">Firmware-Datei auswählen (.bin)</label>
+          <input type="file" id="firmwareFile" class="form-control" accept=".bin" required>
+          <small class="form-text text-muted">Nur .bin Dateien werden unterstützt</small>
+        </div>
+        
+        <div class="form-group">
+          <div class="alert alert-warning" style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 12px; border-radius: 4px; margin: 10px 0;">
+            <strong>⚠️ Warnung:</strong> Trennen Sie das Gerät während des Updates nicht von der Stromversorgung. 
+            Ein unterbrochenes Update kann das Gerät unbrauchbar machen.
+          </div>
+        </div>
+        
+        <div id="firmware-file-info" style="display: none; background-color: #f8f9fa; padding: 12px; border-radius: 4px; margin: 10px 0;">
+          <h5>Datei-Informationen:</h5>
+          <p><strong>Name:</strong> <span id="file-name"></span></p>
+          <p><strong>Größe:</strong> <span id="file-size"></span></p>
+          <p><strong>Typ:</strong> <span id="file-type"></span></p>
+        </div>
+        
+        <div class="form-row">
+          <button type="button" class="btn btn-success" onclick="startFirmwareUpdate()" id="upload-button" disabled>
+            <i class="fas fa-upload" aria-hidden="true"></i>
+            <span class="icon-fallback">📤</span> Update Starten
+          </button>
+          <button type="button" class="btn btn-secondary" onclick="closeFirmwareModal()">
+            Abbrechen
+          </button>
+        </div>
+      </div>
+      
+      <div id="firmware-progress-section" style="display: none;">
+        <h4>Update wird durchgeführt...</h4>
+        <div class="progress" style="width: 100%; height: 20px; background-color: #e9ecef; border-radius: 10px; overflow: hidden; margin: 20px 0;">
+          <div id="firmware-progress-bar" style="height: 100%; background-color: #28a745; width: 0%; transition: width 0.3s ease;"></div>
+        </div>
+        <p id="firmware-status">Update wird vorbereitet...</p>
+        <div class="alert alert-info" style="background-color: #d1ecf1; border: 1px solid #bee5eb; padding: 12px; border-radius: 4px;">
+          <strong>ℹ️ Hinweis:</strong> Das Gerät wird nach erfolgreichem Update automatisch neu gestartet.
+        </div>
+      </div>
+      
+      <div id="firmware-success-section" style="display: none;">
+        <div class="alert alert-success" style="background-color: #d4edda; border: 1px solid #c3e6cb; padding: 12px; border-radius: 4px;">
+          <h4>✅ Update Erfolgreich!</h4>
+          <p>Die Firmware wurde erfolgreich aktualisiert. Das Gerät wird in wenigen Sekunden neu gestartet.</p>
+        </div>
+      </div>
+      
+      <div id="firmware-error-section" style="display: none;">
+        <div class="alert alert-danger" style="background-color: #f8d7da; border: 1px solid #f5c6cb; padding: 12px; border-radius: 4px;">
+          <h4>❌ Update Fehlgeschlagen</h4>
+          <p id="firmware-error-message">Ein unbekannter Fehler ist aufgetreten.</p>
+          <button type="button" class="btn btn-primary" onclick="resetFirmwareModal()">
+            Erneut Versuchen
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Load system info and replace placeholders
+    function loadSystemInfo() {
+      fetch('/api/system-info?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          console.log('DEBUG: System info loaded:', data);
+          
+          // Replace placeholders in the document
+          document.title = document.title.replace('%DEVICE_NAME%', data.device_name);
+          
+          // Replace placeholders in text content
+          const elements = document.querySelectorAll('*');
+          elements.forEach(element => {
+            if (element.childNodes.length === 1 && element.childNodes[0].nodeType === Node.TEXT_NODE) {
+              let text = element.textContent;
+              text = text.replace(/%DEVICE_NAME%/g, data.device_name);
+              text = text.replace(/%WIFI_SSID%/g, data.wifi_ssid);
+              text = text.replace(/%WIFI_IP%/g, data.wifi_ip);
+              text = text.replace(/%WIFI_MAC%/g, data.wifi_mac);
+              text = text.replace(/%WIFI_RSSI%/g, data.wifi_rssi);
+              element.textContent = text;
+            }
+          });
+          
+          console.log('DEBUG: Placeholders replaced');
+        })
+        .catch(error => {
+          console.error('ERROR: Failed to load system info:', error);
+        });
+    }
+
+    // Load current settings on page load
+    document.addEventListener('DOMContentLoaded', function() {
+      console.log('DEBUG: DOMContentLoaded event fired');
+      loadSystemInfo(); // Load system info first
+      loadCurrentSettings();
+      console.log('DEBUG: Calling updateFanStatus for initial load');
+      updateFanStatus(); // Load initial fan status
+      console.log('DEBUG: Calling updateKMeterStatus for initial load');
+      updateKMeterStatus(); // Load initial KMeter status
+      updateTempMappingStatus(); // Load initial temperature mapping settings
+      console.log('DEBUG: Calling updateWiFiStatus for initial load');
+      updateWiFiStatus(); // Load initial WiFi status
+      // Auto-refresh status every 30 seconds
+      setInterval(updateStatus, 30000);
+      setInterval(updateKMeterStatus, 5000); // Update KMeter every 5 seconds
+      setInterval(updateWiFiStatus, 10000); // Update WiFi status every 10 seconds
+      setInterval(updateFanStatus, 15000); // Update fan status every 15 seconds
+      console.log('DEBUG: Setup complete');
+    });
+
+    function loadCurrentSettings() {
+      fetch('/api/settings?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          // Update AP toggle
+          document.getElementById('toggleAP').checked = data.ap_enabled;
+          
+          // Update device name input
+          if (data.device_name) {
+            document.getElementById('device-name').value = data.device_name;
+          }
+          
+          // Update MQTT form fields
+          if (data.mqtt_server) {
+            document.getElementById('mqttServer').value = data.mqtt_server;
+          }
+          if (data.mqtt_port) {
+            document.getElementById('mqttPort').value = data.mqtt_port;
+          }
+          if (data.mqtt_user) {
+            document.getElementById('mqttUser').value = data.mqtt_user;
+          }
+          if (data.mqtt_pass) {
+            document.getElementById('mqttPass').value = data.mqtt_pass;
+          }
+          
+          // Update MQTT status
+          updateMqttStatus(data.mqtt_connected);
+          
+          // Update LED status
+          if (data.led_state !== undefined) {
+            document.getElementById('toggleLED').checked = data.led_state;
+            updateLEDStatus(data.led_state);
+          }
+          
+          // Update last password change
+          if (data.last_password_change) {
+            document.getElementById('last-password-change').textContent = data.last_password_change;
+          }
+          
+          // Update firmware version
+          if (data.firmware_version) {
+            document.getElementById('firmware-version').textContent = 'v' + data.firmware_version;
+          }
+        })
+        .catch(error => console.log('Laden der Einstellungen fehlgeschlagen:', error));
+    }
+
+    function updateStatus() {
+      fetch('/api/status?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          // Update dynamic values
+          document.getElementById('uptime').textContent = data.uptime;
+          document.getElementById('free-memory').textContent = data.free_memory + ' KB';
+          document.getElementById('wifi-signal').textContent = data.wifi_rssi + ' dBm';
+          updateMqttStatus(data.mqtt_connected);
+          
+          // Update LED status
+          if (data.led_state !== undefined) {
+            document.getElementById('toggleLED').checked = data.led_state;
+            updateLEDStatus(data.led_state);
+          }
+          
+          // Update PWM status
+          updatePWMStatus();
+        })
+        .catch(error => console.log('Statusaktualisierung fehlgeschlagen:', error));
+    }
+
+    function updateMqttStatus(connected) {
+      const statusElement = document.getElementById('mqtt-status');
+      if (connected) {
+        statusElement.className = 'status-indicator status-connected';
+        statusElement.innerHTML = '<i class="fas fa-check-circle"></i><span class="icon-fallback">✅</span> Verbunden';
+      } else {
+        statusElement.className = 'status-indicator status-disconnected';
+        statusElement.innerHTML = '<i class="fas fa-times-circle"></i><span class="icon-fallback">❌</span> Getrennt';
+      }
+    }
+
+    function toggleAP() {
+      const isEnabled = document.getElementById('toggleAP').checked;
+      
+      fetch('/api/toggle-ap?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'enable=' + (isEnabled ? '1' : '0')
+      })
+      .then(response => response.text())
+      .then(data => {
+        if (data === 'OK') {
+          showNotification('Access Point ' + (isEnabled ? 'aktiviert' : 'deaktiviert') + '. Gerät wird neu gestartet...', 'success');
+          setTimeout(() => {
+            location.reload();
+          }, 3000);
+        } else {
+          showNotification('Fehler beim Umschalten des Access Points', 'error');
+          // Revert toggle
+          document.getElementById('toggleAP').checked = !isEnabled;
+        }
+      })
+      .catch(error => {
+        showNotification('Netzwerkfehler', 'error');
+        document.getElementById('toggleAP').checked = !isEnabled;
+      });
+    }
+
+    function toggleLED() {
+      const isEnabled = document.getElementById('toggleLED').checked;
+      
+      fetch('/api/led-toggle?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'state=' + (isEnabled ? '1' : '0')
+      })
+        .then(response => response.text())
+        .then(data => {
+          if (data === 'OK') {
+            updateLEDStatus(isEnabled);
+            showNotification('LED erfolgreich ' + (isEnabled ? 'eingeschaltet' : 'ausgeschaltet'), 'success');
+          } else {
+            showNotification('Fehler beim Umschalten der LED', 'error');
+            // Revert toggle on error
+            document.getElementById('toggleLED').checked = !isEnabled;
+          }
+        })
+        .catch(error => {
+          showNotification('Netzwerkfehler', 'error');
+          // Revert toggle on error
+          document.getElementById('toggleLED').checked = !isEnabled;
+        });
+    }
+
+    function updateLEDStatus(isOn) {
+      const statusElement = document.getElementById('led-status');
+      if (isOn) {
+        statusElement.className = 'status-indicator status-connected';
+        statusElement.innerHTML = '<i class="fas fa-lightbulb" aria-hidden="true"></i><span class="icon-fallback">💡</span> Eingeschaltet';
+      } else {
+        statusElement.className = 'status-indicator status-disconnected';
+        statusElement.innerHTML = '<i class="fas fa-circle" aria-hidden="true"></i><span class="icon-fallback">⚫</span> Ausgeschaltet';
+      }
+    }
+
+    // Fan Control Functions
+    function updateFanStatus() {
+      console.log('DEBUG: updateFanStatus called');
+      fetch('/api/pwm-status?token=' + getToken())
+        .then(response => {
+          console.log(`DEBUG: Fan status response status: ${response.status}`);
+          return response.json();
+        })
+        .then(data => {
+          console.log('DEBUG: Fan status data:', data);
+          // Fan status is managed automatically, just update the display
+          const fanStatus = document.getElementById('pwm-status');
+          if (fanStatus) {
+            if (data.duty !== undefined && data.duty > 0) {
+              fanStatus.innerHTML = '<i class="fas fa-fan"></i><span class="icon-fallback">🌀</span> Läuft (' + Math.round((data.duty / 255) * 100) + '%)';
+            } else {
+              fanStatus.innerHTML = '<i class="fas fa-fan"></i><span class="icon-fallback">🌀</span> Bereit';
+            }
+          }
+          console.log(`DEBUG: Fan status updated - Duty: ${data.duty}`);
+        })
+        .catch(error => {
+          console.error('DEBUG: Fan status error:', error);
+          const fanStatus = document.getElementById('pwm-status');
+          if (fanStatus) {
+            fanStatus.innerHTML = '<i class="fas fa-exclamation-triangle"></i><span class="icon-fallback">⚠️</span> Fehler';
+          }
+        });
+    }
+
+    // Temperature Mapping Functions
+    function updateTempMapping() {
+      const startTemp = document.getElementById('start-temp').value;
+      const maxTemp = document.getElementById('max-temp').value;
+      
+      // Validation
+      if (parseFloat(startTemp) >= parseFloat(maxTemp)) {
+        showNotification('Starttemperatur muss kleiner als Maximaltemperatur sein', 'error');
+        return;
+      }
+      
+      fetch('/api/temp-mapping?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: `startTemp=${startTemp}&maxTemp=${maxTemp}`
+      })
+        .then(response => response.text())
+        .then(data => {
+          if (data === 'OK') {
+            showNotification('Temperaturmapping gespeichert', 'success');
+          } else {
+            showNotification('Temperaturmapping fehlgeschlagen', 'error');
+          }
+        })
+        .catch(error => {
+          console.error('Temperature mapping error:', error);
+          showNotification('Temperaturmapping-Netzwerkfehler', 'error');
+        });
+    }
+
+    function updateTempMappingStatus() {
+      fetch('/api/temp-mapping-status?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          if (data.startTemp !== undefined && data.maxTemp !== undefined) {
+            document.getElementById('start-temp').value = data.startTemp;
+            document.getElementById('max-temp').value = data.maxTemp;
+          }
+        })
+        .catch(error => {
+          console.error('Temperature mapping status error:', error);
+        });
+    }
+
+    // KMeter-ISO Sensor Functions
+    function updateKMeterStatus() {
+      console.log('DEBUG: updateKMeterStatus called');
+      fetch('/api/kmeter-status?token=' + getToken())
+        .then(response => {
+          console.log(`DEBUG: KMeter status response status: ${response.status}`);
+          return response.json();
+        })
+        .then(data => {
+          console.log('DEBUG: KMeter status data:', data);
+          
+          // Update status indicator
+          const statusEl = document.getElementById('kmeter-status');
+          const statusTextEl = document.getElementById('kmeter-status-text');
+          
+          if (data.initialized && data.ready) {
+            statusEl.className = 'status-indicator status-connected';
+            statusTextEl.textContent = data.status_string;
+          } else if (data.initialized) {
+            statusEl.className = 'status-indicator status-warning';
+            statusTextEl.textContent = data.status_string;
+          } else {
+            statusEl.className = 'status-indicator status-disconnected';
+            statusTextEl.textContent = 'Nicht initialisiert';
+          }
+          
+          // Update temperature values
+          if (data.ready) {
+            document.getElementById('kmeter-temp-celsius').textContent = data.temperature_celsius.toFixed(2) + '°C';
+            document.getElementById('kmeter-internal-temp').textContent = data.internal_temperature.toFixed(2) + '°C';
+          } else {
+            document.getElementById('kmeter-temp-celsius').textContent = '--°C';
+            document.getElementById('kmeter-internal-temp').textContent = '--°C';
+          }
+          
+          // Update configuration
+          document.getElementById('kmeter-i2c-addr').textContent = data.i2c_address;
+          document.getElementById('kmeter-interval').value = data.read_interval;
+          
+          console.log(`DEBUG: KMeter updated - Temp: ${data.temperature_celsius}°C, Status: ${data.status_string}`);
+        })
+        .catch(error => {
+          console.error('DEBUG: KMeter status error:', error);
+          document.getElementById('kmeter-status-text').textContent = 'Verbindungsfehler';
+          document.getElementById('kmeter-status').className = 'status-indicator status-disconnected';
+        });
+    }
+
+    function updateKMeterInterval() {
+      const interval = document.getElementById('kmeter-interval').value;
+      console.log(`DEBUG: Setting KMeter interval to ${interval}ms`);
+      
+      fetch('/api/kmeter-config?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: `read_interval=${interval}`
+      })
+        .then(response => response.text())
+        .then(data => {
+          if (data === 'OK') {
+            showNotification(`KMeter Intervall auf ${interval}ms gesetzt`, 'success');
+            updateKMeterStatus(); // Refresh status
+          } else {
+            showNotification('KMeter Konfiguration fehlgeschlagen', 'error');
+          }
+        })
+        .catch(error => {
+          console.error('DEBUG: KMeter config error:', error);
+          showNotification('KMeter Netzwerkfehler', 'error');
+        });
+    }
+
+    function changeKMeterI2C() {
+      const currentAddr = document.getElementById('kmeter-i2c-addr').textContent;
+      const newAddr = prompt(`Neue I2C-Adresse eingeben (aktuell: ${currentAddr}):`, '0x67');
+      
+      if (newAddr && newAddr !== currentAddr) {
+        console.log(`DEBUG: Changing KMeter I2C address to ${newAddr}`);
+        
+        fetch('/api/kmeter-config?token=' + getToken(), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: `i2c_address=${newAddr}`
+        })
+          .then(response => response.text())
+          .then(data => {
+            if (data === 'OK') {
+              showNotification(`I2C-Adresse geändert zu ${newAddr}`, 'success');
+              updateKMeterStatus(); // Refresh status
+            } else {
+              showNotification('I2C-Adresse ändern fehlgeschlagen', 'error');
+            }
+          })
+          .catch(error => {
+            console.error('DEBUG: KMeter I2C change error:', error);
+            showNotification('I2C-Adresse Netzwerkfehler', 'error');
+          });
+      }
+    }
+
+    function restartDevice() {
+      if (confirm('Sind Sie sicher, dass Sie das Gerät neu starten möchten?')) {
+        fetch('/api/restart?token=' + getToken(), { method: 'POST' })
+          .then(() => {
+            showNotification('Gerät wird neu gestartet...', 'info');
+            setTimeout(() => {
+              location.reload();
+            }, 10000);
+          })
+          .catch(error => {
+            showNotification('Neustart fehlgeschlagen', 'error');
+          });
+      }
+    }
+
+    function factoryReset() {
+      if (confirm('WARNUNG: Dies wird alle Einstellungen löschen und das Gerät auf die Werkseinstellungen zurücksetzen. Sind Sie sicher?')) {
+        if (confirm('Diese Aktion kann nicht rückgängig gemacht werden. Klicken Sie auf OK, um mit dem Zurücksetzen auf die Werkseinstellungen fortzufahren.')) {
+          fetch('/api/factory-reset?token=' + getToken(), { method: 'POST' })
+            .then(() => {
+              showNotification('Werkseinstellungen werden zurückgesetzt. Gerät wird neu gestartet...', 'warning');
+              setTimeout(() => {
+                window.location.href = '/';
+              }, 5000);
+            })
+            .catch(error => {
+              showNotification('Fehler beim Zurücksetzen auf die Werkseinstellungen', 'error');
+            });
+        }
+      }
+    }
+
+    function saveDeviceName() {
+      const deviceName = document.getElementById('device-name').value.trim();
+      if (!deviceName) {
+        showNotification('Bitte geben Sie einen Gerätenamen ein', 'error');
+        return;
+      }
+      
+      if (deviceName.length > 31) {
+        showNotification('Gerätename zu lang (max 31 Zeichen)', 'error');
+        return;
+      }
+
+      fetch('/api/device-name?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: 'name=' + encodeURIComponent(deviceName)
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          showNotification('Gerätename erfolgreich gespeichert', 'success');
+          // Update the header if it exists
+          updateHeaderDeviceName(deviceName);
+        } else {
+          showNotification('Fehler beim Speichern des Gerätenamens', 'error');
+        }
+      })
+      .catch(error => {
+        showNotification('Fehler beim Speichern des Gerätenamens', 'error');
+      });
+    }
+
+    function updateHeaderDeviceName(deviceName) {
+      // Update the navbar device name
+      const navbarDeviceName = document.getElementById('navbar-device-name');
+      if (navbarDeviceName) {
+        navbarDeviceName.textContent = deviceName;
+      }
+      
+      // Update the sidebar title
+      const sidebarTitle = document.getElementById('sidebar-title');
+      if (sidebarTitle) {
+        sidebarTitle.textContent = 'HeatBodyVentilator - ' + deviceName;
+      }
+      
+      // Update the page title
+      document.title = 'HeatBodyVentilator - ' + deviceName + ' Einstellungen';
+    }
+
+    // WiFi Modal Functions
+    function openWifiModal() {
+      document.getElementById('wifiModal').style.display = 'block';
+      
+      // Load current WiFi settings
+      loadCurrentWifiSettings();
+      
+      // Start with network scan
+      scanWifi();
+    }
+    
+    function loadCurrentWifiSettings() {
+      // Try to get current WiFi SSID from the status display
+      const currentWifiElement = document.querySelector('#wifi-status');
+      if (currentWifiElement) {
+        const wifiText = currentWifiElement.textContent.trim();
+        // Extract SSID (remove the checkmark icon text)
+        const ssidMatch = wifiText.match(/✅\s*(.+)/);
+        if (ssidMatch && ssidMatch[1] && !ssidMatch[1].includes('%WIFI_SSID%')) {
+          document.getElementById('ssid').value = ssidMatch[1].trim();
+        }
+      }
+      
+      // Load from API if available
+      fetch('/api/wifi-status?token=' + getToken())
+        .then(response => response.json())
+        .then(data => {
+          if (data.ssid && data.ssid !== 'Nicht verbunden') {
+            document.getElementById('ssid').value = data.ssid;
+          }
+        })
+        .catch(error => {
+          console.log('Could not load current WiFi settings:', error);
+        });
+    }
+
+    function closeWifiModal() {
+      document.getElementById('wifiModal').style.display = 'none';
+      // Clear form fields when closing
+      document.getElementById('ssid').value = '';
+      document.getElementById('password').value = '';
+    }
+
+    // WiFi Status Update Function
+    function updateWiFiStatus() {
+      console.log('DEBUG: updateWiFiStatus called');
+      fetch('/api/wifi-status?token=' + getToken())
+        .then(response => {
+          console.log(`DEBUG: WiFi status response status: ${response.status}`);
+          return response.json();
+        })
+        .then(data => {
+          console.log('DEBUG: WiFi status data:', data);
+          
+          // Update WiFi connection status
+          const wifiStatus = document.getElementById('wifi-status');
+          const wifiSsidDisplay = document.getElementById('wifi-ssid-display');
+          const wifiIp = document.getElementById('wifi-ip');
+          const wifiMac = document.getElementById('wifi-mac');
+          const wifiSignal = document.getElementById('wifi-signal');
+          
+          if (data.connected && data.ssid) {
+            // Connected
+            wifiStatus.className = 'status-indicator status-connected';
+            wifiStatus.innerHTML = '<i class="fas fa-check-circle"></i><span class="icon-fallback">✅</span><span id="wifi-ssid-display">' + data.ssid + '</span>';
+            wifiIp.textContent = data.ip || 'Unbekannt';
+            wifiMac.textContent = data.mac || 'Unbekannt';
+            wifiSignal.textContent = (data.rssi || '--') + ' dBm';
+          } else {
+            // Disconnected
+            wifiStatus.className = 'status-indicator status-disconnected';
+            wifiStatus.innerHTML = '<i class="fas fa-times-circle"></i><span class="icon-fallback">❌</span><span id="wifi-ssid-display">Nicht verbunden</span>';
+            wifiIp.textContent = 'Nicht verfügbar';
+            wifiMac.textContent = data.mac || 'Unbekannt';
+            wifiSignal.textContent = '-- dBm';
+          }
+          
+          console.log(`DEBUG: WiFi status updated - Connected: ${data.connected}, SSID: ${data.ssid}`);
+        })
+        .catch(error => {
+          console.error('DEBUG: WiFi status error:', error);
+          // Show error state
+          const wifiStatus = document.getElementById('wifi-status');
+          wifiStatus.className = 'status-indicator status-disconnected';
+          wifiStatus.innerHTML = '<i class="fas fa-exclamation-triangle"></i><span class="icon-fallback">⚠️</span><span id="wifi-ssid-display">Fehler</span>';
+        });
+    }
+
+    function scanWifi() {
+      const networkList = document.getElementById('networkList');
+      networkList.innerHTML = '<div class="text-center p-3">Durchsuche nach Netzwerken...</div>';
+
+      fetch('/api/wifi-scan?token=' + getToken())
+        .then(response => {
+          if (!response.ok) {
+            throw new Error('Netzwerkscan fehlgeschlagen: ' + response.status);
+          }
+          return response.json();
+        })
+        .then(data => {
+          networkList.innerHTML = '';
+          // Backend returns {networks: [...]} format
+          const networks = data.networks || data;
+          
+          if (!networks || networks.length === 0) {
+            networkList.innerHTML = '<div class="text-center p-3" style="color: #6c757d;">Keine Netzwerke gefunden</div>';
+            return;
+          }
+          
+          networks.forEach(network => {
+            const networkItem = document.createElement('div');
+            networkItem.className = 'network-item';
+            networkItem.onclick = () => selectNetwork(network.ssid);
+            
+            // Determine security type
+            const security = network.encryption !== undefined ?
+              (network.encryption > 0 ? 'Sicher' : 'Offen') :
+              (network.security ? 'Sicher' : 'Offen');
+
+            networkItem.innerHTML = `
+              <div class="network-info">
+                <div class="network-name">${network.ssid}</div>
+                <div class="network-details">${security}${network.channel ? ' • Channel ' + network.channel : ''}</div>
+              </div>
+              <div class="signal-strength">
+                <span>${network.rssi} dBm</span>
+                <i class="fas fa-wifi" style="color: ${getSignalColor(network.rssi)}"></i>
+              </div>
+            `;
+            networkList.appendChild(networkItem);
+          });
+        })
+        .catch(error => {
+          console.error('WiFi scan error:', error);
+          networkList.innerHTML = '<div class="text-center p-3 text-danger">Netzwerkscan fehlgeschlagen. Bitte erneut versuchen.</div>';
+        });
+    }
+
+    function selectNetwork(ssid) {
+      document.getElementById('ssid').value = ssid;
+      // Focus on password field since SSID is now filled
+      document.getElementById('password').focus();
+    }
+
+    function getSignalColor(rssi) {
+      if (rssi > -50) return '#28a745';
+      if (rssi > -70) return '#ffc107';
+      return '#dc3545';
+    }
+
+    // MQTT Modal Functions
+    function openMqttModal() {
+      document.getElementById('mqttModal').style.display = 'block';
+    }
+
+    function closeMqttModal() {
+      document.getElementById('mqttModal').style.display = 'none';
+    }
+
+    function testMqttConnection() {
+      showNotification('MQTT-Verbindung wird getestet...', 'info');
+
+      fetch('/api/mqtt-test?token=' + getToken(), { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+          if (data.success) {
+            showNotification('MQTT-Verbindung erfolgreich!', 'success');
+            updateMqttStatus(true);
+          } else {
+            showNotification('MQTT-Verbindung fehlgeschlagen: ' + data.error, 'error');
+            updateMqttStatus(false);
+          }
+        })
+        .catch(error => {
+          showNotification('MQTT-Test fehlgeschlagen', 'error');
+        });
+    }
+
+    // Form Submissions
+    document.getElementById('wifiForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      
+      const ssid = document.getElementById('ssid').value;
+      const password = document.getElementById('password').value;
+      
+      fetch('/wifi_connect?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: `ssid=${encodeURIComponent(ssid)}&password=${encodeURIComponent(password)}`
+      })
+      .then(response => response.text())
+      .then(data => {
+        if (data.includes('Success') || data.includes('OK')) {
+          showNotification('WiFi-Verbindung erfolgreich!', 'success');
+          closeWifiModal();
+        } else {
+          showNotification('WiFi-Verbindung fehlgeschlagen', 'error');
+        }
+      })
+      .catch(error => {
+        showNotification('Netzwerkfehler', 'error');
+      });
+    });
+
+    document.getElementById('mqttForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      
+      const server = document.getElementById('mqttServer').value;
+      const port = document.getElementById('mqttPort').value;
+      const user = document.getElementById('mqttUser').value;
+      const pass = document.getElementById('mqttPass').value;
+      
+      fetch('/api/mqtt-settings?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: `server=${encodeURIComponent(server)}&port=${port}&user=${encodeURIComponent(user)}&pass=${encodeURIComponent(pass)}`
+      })
+      .then(response => response.text())
+      .then(data => {
+        if (data === 'OK') {
+          showNotification('MQTT-Einstellungen erfolgreich gespeichert!', 'success');
+          closeMqttModal();
+        } else {
+          showNotification('Fehler beim Speichern der MQTT-Einstellungen', 'error');
+        }
+      })
+      .catch(error => {
+        showNotification('Netzwerkfehler', 'error');
+      });
+    });
+
+    function disconnectWifi() {
+      if (confirm('Von aktuellem WiFi-Netzwerk trennen?')) {
+        fetch('/api/wifi-disconnect?token=' + getToken(), { method: 'POST' })
+          .then(response => response.text())
+          .then(data => {
+            showNotification('WiFi getrennt', 'info');
+            setTimeout(() => location.reload(), 2000);
+          })
+          .catch(error => {
+            showNotification('Fehler beim Trennen', 'error');
+          });
+      }
+    }
+
+    function clearWifiSettings() {
+      if (confirm('Alle gespeicherten WiFi-Anmeldeinformationen löschen?')) {
+        fetch('/api/wifi-clear?token=' + getToken(), { method: 'POST' })
+          .then(response => response.text())
+          .then(data => {
+            showNotification('WiFi-Einstellungen gelöscht', 'warning');
+            setTimeout(() => location.reload(), 2000);
+          })
+          .catch(error => {
+            showNotification('Fehler beim Löschen der Einstellungen', 'error');
+          });
+      }
+    }
+
+    // Utility Functions
+    function showNotification(message, type = 'info') {
+      const notification = document.createElement('div');
+      notification.style.cssText = `
+        position: fixed;
+        top: 80px;
+        right: 20px;
+        background: ${type === 'success' ? 'var(--success)' : type === 'error' ? 'var(--danger)' : type === 'warning' ? 'var(--warning)' : 'var(--primary)'};
+        color: ${type === 'warning' ? 'var(--dark)' : 'white'};
+        padding: 12px 20px;
+        border-radius: 4px;
+        box-shadow: var(--shadow);
+        z-index: 9999;
+        max-width: 300px;
+        word-wrap: break-word;
+        transition: all 0.3s ease;
+      `;
+      notification.textContent = message;
+      document.body.appendChild(notification);
+      
+      setTimeout(() => {
+        notification.style.opacity = '0';
+        setTimeout(() => {
+          if (document.body.contains(notification)) {
+            document.body.removeChild(notification);
+          }
+        }, 300);
+      }, 5000);
+    }
+
+    function getToken() {
+      const urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get('token') || '';
+    }
+
+    function navigateWithToken(page) {
+      const token = getToken();
+      if (token) {
+        window.location.href = page + '?token=' + token;
+      } else {
+        window.location.href = page;
+      }
+    }
+
+    // Password Modal Functions
+    function openPasswordModal() {
+      document.getElementById('passwordModal').style.display = 'block';
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closePasswordModal() {
+      document.getElementById('passwordModal').style.display = 'none';
+      document.body.style.overflow = 'auto';
+      document.getElementById('passwordForm').reset();
+    }
+
+    // Handle password form submission
+    document.getElementById('passwordForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      
+      const currentPassword = document.getElementById('currentPassword').value;
+      const newPassword = document.getElementById('newPassword').value;
+      const confirmPassword = document.getElementById('confirmPassword').value;
+      
+      // Validate passwords match
+      if (newPassword !== confirmPassword) {
+        showNotification('Die neuen Passwörter stimmen nicht überein', 'error');
+        return;
+      }
+      
+      // Validate password length
+      if (newPassword.length < 6) {
+        showNotification('Das neue Passwort muss mindestens 6 Zeichen lang sein', 'error');
+        return;
+      }
+      
+      // Send password change request
+      fetch('/api/change-password?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'current_password=' + encodeURIComponent(currentPassword) + 
+              '&new_password=' + encodeURIComponent(newPassword)
+      })
+      .then(response => response.text())
+      .then(data => {
+        if (data === 'OK') {
+          showNotification('Passwort erfolgreich geändert!', 'success');
+          closePasswordModal();
+          // Update last password change timestamp
+          const now = new Date().toLocaleString('de-DE');
+          document.getElementById('last-password-change').textContent = now;
+        } else if (data === 'INVALID') {
+          showNotification('Aktuelles Passwort ist falsch', 'error');
+        } else {
+          showNotification('Fehler beim Ändern des Passworts', 'error');
+        }
+      })
+      .catch(error => {
+        showNotification('Netzwerkfehler beim Ändern des Passworts', 'error');
+        console.error('Password change error:', error);
+      });
+    });
+
+    // Firmware Update Modal Functions
+    function openFirmwareModal() {
+      document.getElementById('firmwareModal').style.display = 'block';
+      document.body.style.overflow = 'hidden';
+      resetFirmwareModal();
+    }
+
+    function closeFirmwareModal() {
+      document.getElementById('firmwareModal').style.display = 'none';
+      document.body.style.overflow = 'auto';
+      resetFirmwareModal();
+    }
+
+    function resetFirmwareModal() {
+      // Show upload section, hide others
+      document.getElementById('firmware-upload-section').style.display = 'block';
+      document.getElementById('firmware-progress-section').style.display = 'none';
+      document.getElementById('firmware-success-section').style.display = 'none';
+      document.getElementById('firmware-error-section').style.display = 'none';
+      
+      // Reset form
+      document.getElementById('firmwareFile').value = '';
+      document.getElementById('upload-button').disabled = true;
+      document.getElementById('firmware-file-info').style.display = 'none';
+    }
+
+    // Handle file selection
+    document.getElementById('firmwareFile').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      const uploadButton = document.getElementById('upload-button');
+      const fileInfo = document.getElementById('firmware-file-info');
+      
+      if (file) {
+        // Validate file type
+        if (!file.name.toLowerCase().endsWith('.bin')) {
+          showNotification('Nur .bin Dateien sind erlaubt', 'error');
+          e.target.value = '';
+          uploadButton.disabled = true;
+          fileInfo.style.display = 'none';
+          return;
+        }
+        
+        // Validate file size (max 2MB for ESP32)
+        if (file.size > 2 * 1024 * 1024) {
+          showNotification('Datei ist zu groß. Maximum: 2MB', 'error');
+          e.target.value = '';
+          uploadButton.disabled = true;
+          fileInfo.style.display = 'none';
+          return;
+        }
+        
+        // Show file info
+        document.getElementById('file-name').textContent = file.name;
+        document.getElementById('file-size').textContent = (file.size / 1024).toFixed(1) + ' KB';
+        document.getElementById('file-type').textContent = file.type || 'application/octet-stream';
+        fileInfo.style.display = 'block';
+        uploadButton.disabled = false;
+      } else {
+        fileInfo.style.display = 'none';
+        uploadButton.disabled = true;
+      }
+    });
+
+    function startFirmwareUpdate() {
+      const fileInput = document.getElementById('firmwareFile');
+      const file = fileInput.files[0];
+      
+      if (!file) {
+        showNotification('Bitte wählen Sie eine Firmware-Datei aus', 'error');
+        return;
+      }
+      
+      // Confirm before starting
+      if (!confirm('Sind Sie sicher, dass Sie das Firmware-Update starten möchten?\n\nWährend des Updates darf das Gerät NICHT von der Stromversorgung getrennt werden!')) {
+        return;
+      }
+      
+      // Hide upload section, show progress
+      document.getElementById('firmware-upload-section').style.display = 'none';
+      document.getElementById('firmware-progress-section').style.display = 'block';
+      
+      // Create FormData for file upload
+      const formData = new FormData();
+      formData.append('firmware', file);
+      formData.append('token', getToken());
+      
+      // Start upload with progress tracking
+      const xhr = new XMLHttpRequest();
+      
+      xhr.upload.addEventListener('progress', function(e) {
+        if (e.lengthComputable) {
+          const percentComplete = (e.loaded / e.total) * 100;
+          document.getElementById('firmware-progress-bar').style.width = percentComplete + '%';
+          document.getElementById('firmware-status').textContent = 
+            `Upload läuft: ${percentComplete.toFixed(1)}% (${(e.loaded / 1024).toFixed(1)} KB von ${(e.total / 1024).toFixed(1)} KB)`;
+        }
+      });
+      
+      xhr.addEventListener('load', function() {
+        if (xhr.status === 200) {
+          const response = xhr.responseText;
+          if (response === 'OK') {
+            // Success
+            document.getElementById('firmware-progress-section').style.display = 'none';
+            document.getElementById('firmware-success-section').style.display = 'block';
+            
+            // Auto-close modal after success
+            setTimeout(() => {
+              closeFirmwareModal();
+              showNotification('Firmware-Update erfolgreich! Gerät wird neu gestartet...', 'success');
+            }, 3000);
+          } else {
+            // Error response from server
+            showFirmwareError('Server-Fehler: ' + response);
+          }
+        } else {
+          // HTTP error
+          showFirmwareError('HTTP-Fehler: ' + xhr.status + ' - ' + xhr.statusText);
+        }
+      });
+      
+      xhr.addEventListener('error', function() {
+        showFirmwareError('Netzwerkfehler beim Upload');
+      });
+      
+      xhr.addEventListener('timeout', function() {
+        showFirmwareError('Upload-Timeout - Versuchen Sie es erneut');
+      });
+      
+      xhr.timeout = 120000; // 2 minutes timeout
+      xhr.open('POST', '/api/firmware-update?token=' + getToken());
+      xhr.send(formData);
+    }
+
+    function showFirmwareError(message) {
+      document.getElementById('firmware-progress-section').style.display = 'none';
+      document.getElementById('firmware-error-section').style.display = 'block';
+      document.getElementById('firmware-error-message').textContent = message;
+    }
+
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      const overlay = document.getElementById('overlay');
+      sidebar.classList.toggle('active');
+      overlay.classList.toggle('active');
+    }
+
+    function logout() {
+      if (confirm('Are you sure you want to logout?')) {
+        window.location.href = 'login.html';
+      }
+    }
+    
+    // Footer functions
+    function showLicense() {
+      const licenseText = `HeatBodyVentilator - Custom Source-Available License
+
+Copyright (c) 2025 SmartHome-Assistant (Markus Reza Tain)
+
+Nutzungsbedingungen:
+- Dieser Code steht unter einer benutzerdefinierten Lizenz
+- Kommerzielle Nutzung ist ohne ausdrückliche Genehmigung nicht gestattet
+- Modifikationen dürfen nicht ohne Erlaubnis veröffentlicht werden
+- Bei Nutzung muss eine Namensnennung erfolgen
+
+Für kommerzielle Nutzungsrechte kontaktieren Sie bitte:
+SmartHome-Assistant (Markus Reza Tain)`;
+      
+      alert(licenseText);
+    }
+
+    // Close modals when clicking outside
+    window.onclick = function(event) {
+      const wifiModal = document.getElementById('wifiModal');
+      const mqttModal = document.getElementById('mqttModal');
+      const passwordModal = document.getElementById('passwordModal');
+      const firmwareModal = document.getElementById('firmwareModal');
+      
+      if (event.target === wifiModal) {
+        closeWifiModal();
+      } else if (event.target === mqttModal) {
+        closeMqttModal();
+      } else if (event.target === passwordModal) {
+        closePasswordModal();
+      } else if (event.target === firmwareModal) {
+        closeFirmwareModal();
+      }
+    }
+
+    // Keyboard navigation
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        // Close any open modal or sidebar
+        closeWifiModal();
+        closeMqttModal();
+        closePasswordModal();
+        closeFirmwareModal();
+        
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('overlay');
+        if (sidebar.classList.contains('active')) {
+          sidebar.classList.remove('active');
+          overlay.classList.remove('active');
+        }
+      }
+    });
+  </script>
+</body>
+</html>
