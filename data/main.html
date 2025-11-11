@@ -389,8 +389,11 @@
       fetch('/api/pwm-status?token=' + getToken())
         .then(response => response.json())
         .then(data => {
-          if (data.duty !== undefined) {
-            const percentage = Math.round((data.duty / 255) * 100);
+          if (data.duty_percent !== undefined) {
+            const percentage = Math.round(data.duty_percent);
+            document.getElementById('fan-speed').textContent = percentage + '%';
+          } else if (data.duty_raw !== undefined) {
+            const percentage = Math.round((data.duty_raw / 255) * 100);
             document.getElementById('fan-speed').textContent = percentage + '%';
           }
         })
@@ -576,8 +579,11 @@ SmartHome-Assistant (Markus Reza Tain)`;
       fetch('/api/pwm-status?token=' + getToken())
         .then(response => response.json())
         .then(data => {
-          if (data.duty !== undefined) {
-            const percentage = Math.round((data.duty / 255) * 100);
+          if (data.duty_percent !== undefined) {
+            const percentage = Math.round(data.duty_percent);
+            document.getElementById('fan-speed').textContent = percentage + '%';
+          } else if (data.duty_raw !== undefined) {
+            const percentage = Math.round((data.duty_raw / 255) * 100);
             document.getElementById('fan-speed').textContent = percentage + '%';
           }
         })

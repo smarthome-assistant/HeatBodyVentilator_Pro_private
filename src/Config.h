@@ -29,6 +29,10 @@ namespace Config {
     extern bool MANUAL_PWM_MODE;      // false = Auto, true = Manual
     extern uint32_t MANUAL_PWM_FREQ;  // PWM Frequency in Hz
     extern uint8_t MANUAL_PWM_DUTY;   // PWM Duty Cycle in % (0-100)
+    
+    // Bluetooth Proxy settings
+    extern bool BT_PROXY_ENABLED;     // Enable/Disable Bluetooth Proxy
+    extern char BT_PROXY_NAME[32];    // Bluetooth Proxy Device Name
 
     void loadSettings();
     void saveWebPassword(const char* newPassword);
@@ -40,6 +44,8 @@ namespace Config {
     void saveAutoPWMEnabled(bool enabled);
     void saveManualPWMMode(bool enabled);
     void saveManualPWMSettings(uint32_t frequency, uint8_t dutyCycle);
+    void saveBTProxyEnabled(bool enabled);
+    void saveBTProxyName(const char* name);
     void factoryReset();
     String getLastPasswordChange();
 }

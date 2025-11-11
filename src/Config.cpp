@@ -3,8 +3,8 @@
 #include <time.h>
 
 namespace Config {
-    char WEB_PASSWORD[32] = "your_password_here";
-    char DEVICE_NAME[32] = "ESP32-Test";
+    char WEB_PASSWORD[32] = "smarthome-assistant.info";
+    char DEVICE_NAME[32] = "#1";
     char MQTT_SERVER[64] = "";
     uint16_t MQTT_PORT = 1883;
     char MQTT_USER[32] = "";
@@ -22,6 +22,10 @@ namespace Config {
     bool MANUAL_PWM_MODE = false;     // false = Auto, true = Manual
     uint32_t MANUAL_PWM_FREQ = 1000;  // Default 1000 Hz
     uint8_t MANUAL_PWM_DUTY = 0;      // Default 0%
+    
+    // Bluetooth Proxy settings
+    bool BT_PROXY_ENABLED = false;    // Disabled by default
+    char BT_PROXY_NAME[32] = "HeatBodyVentilator-BT";
 
     void loadSettings() {
         Preferences prefs;
@@ -73,6 +77,11 @@ namespace Config {
         MANUAL_PWM_MODE = prefs.getBool("manual_mode", false);
         MANUAL_PWM_FREQ = prefs.getUInt("manual_freq", 1000);
         MANUAL_PWM_DUTY = prefs.getUChar("manual_duty", 0);
+        
+        BT_PROXY_ENABLED = prefs.getBool("bt_proxy_en", false);
+        String btProxyName = prefs.getString("bt_proxy_name", "HeatBodyVentilator-BT");
+        strncpy(BT_PROXY_NAME, btProxyName.c_str(), sizeof(BT_PROXY_NAME));
+        BT_PROXY_NAME[sizeof(BT_PROXY_NAME)-1] = '\0';
         
         prefs.end();
         Serial.println("Settings loaded successfully");
@@ -196,6 +205,8 @@ namespace Config {
         MANUAL_PWM_MODE = false;
         MANUAL_PWM_FREQ = 1000;
         MANUAL_PWM_DUTY = 0;
+        BT_PROXY_ENABLED = false;
+        strcpy(BT_PROXY_NAME, "HeatBodyVentilator-BT");
         
         Serial.println("Factory reset completed");
     }
@@ -261,6 +272,35 @@ namespace Config {
             Serial.printf("Manual PWM settings saved: Freq=%u Hz, Duty=%u%%\n", frequency, dutyCycle);
         } else {
             Serial.println("Error: Failed to save manual PWM settings");
+        }
+    }
+
+    void saveBTProxyEnabled(bool enabled) {
+        Preferences prefs;
+        if (prefs.begin("settings", false)) {
+            prefs.putBool("bt_proxy_en", enabled);
+            prefs.end();
+            
+            BT_PROXY_ENABLED = enabled;
+            
+            Serial.printf("Bluetooth Proxy enabled saved: %s\n", enabled ? "Enabled" : "Disabled");
+        } else {
+            Serial.println("Error: Failed to save Bluetooth Proxy enabled setting");
+        }
+    }
+
+    void saveBTProxyName(const char* name) {
+        Preferences prefs;
+        if (prefs.begin("settings", false)) {
+            prefs.putString("bt_proxy_name", name);
+            prefs.end();
+            
+            strncpy(BT_PROXY_NAME, name, sizeof(BT_PROXY_NAME));
+            BT_PROXY_NAME[sizeof(BT_PROXY_NAME)-1] = '\0';
+            
+            Serial.printf("Bluetooth Proxy name saved: %s\n", name);
+        } else {
+            Serial.println("Error: Failed to save Bluetooth Proxy name");
         }
     }
 }
