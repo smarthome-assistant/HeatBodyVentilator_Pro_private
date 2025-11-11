@@ -1,1165 +1,1647 @@
-﻿#include "ServerManager.h"
-#include "Config.h"
+#include "ServerManager.h"
 #include "WiFiManager.h"
 #include "MQTTManager.h"
 #include "LEDManager.h"
-#include "KMeterManager.h"
-#include <WiFi.h>
-#include <Preferences.h>
-#include <Update.h>
+#include "ArduinoJson.h"
+#include <string.h>
+#include "esp_spiffs.h"
+#include "nvs_flash.h"
+#include "nvs.h"
+#include "esp_chip_info.h"
+#include "esp_flash.h"
+#include "esp_wifi.h"
+#include "esp_random.h"
+#include "driver/ledc.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+static const char *TAG = "SERVER";
 
 extern LEDManager led;
 extern MQTTManager mqttManager;
+extern WiFiManager wifi;
 
-extern const uint8_t _binary_data_index_html_start[] asm("_binary_data_index_html_start");
-extern const uint8_t _binary_data_index_html_end[]   asm("_binary_data_index_html_end");
-extern const uint8_t _binary_data_style_css_start[]  asm("_binary_data_style_css_start");
-extern const uint8_t _binary_data_style_css_end[]    asm("_binary_data_style_css_end");
-extern const uint8_t _binary_data_login_html_start[] asm("_binary_data_login_html_start");
-extern const uint8_t _binary_data_login_html_end[]   asm("_binary_data_login_html_end");
-extern const uint8_t _binary_data_img_logo_png_start[]   asm("_binary_data_img_logo_png_start");
-extern const uint8_t _binary_data_img_logo_png_end[]     asm("_binary_data_img_logo_png_end");
-extern const uint8_t _binary_data_main_html_start[] asm("_binary_data_main_html_start");
-extern const uint8_t _binary_data_main_html_end[]   asm("_binary_data_main_html_end");
+static ServerManager* serverInstance = nullptr;
 
-String sessionToken;
-static bool ledState = false;
-
-
-
-ServerManager::ServerManager()
-    : server(Config::HTTP_PORT) {}
+ServerManager::ServerManager() : server(nullptr) {
+    serverInstance = this;
+}
 
 void ServerManager::begin() {
-    setupRoutes();
+    // SPIFFS initialisieren
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = "/spiffs",
+        .partition_label = NULL,
+        .max_files = 5,
+        .format_if_mount_failed = true
+    };
+    
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
+    } else {
+        size_t total = 0, used = 0;
+        ret = esp_spiffs_info(NULL, &total, &used);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "SPIFFS: Total: %d, Used: %d", total, used);
+        }
+    }
+    
     initializePWM();
     
-    delay(500);
-    
-    Serial.println("DEBUG: Initializing KMeter-ISO sensor...");
-    Serial.println("DEBUG: Using alternative I2C pins to avoid conflicts with PWM");
+    ESP_LOGI(TAG, "Initializing KMeter-ISO sensor...");
     if (kmeterManager.begin(0x66, 26, 32)) {
-        Serial.println("KMeter-ISO sensor initialized successfully");
+        ESP_LOGI(TAG, "KMeter-ISO sensor initialized successfully");
     } else {
-        Serial.println("Warning: KMeter-ISO sensor initialization failed");
-        Serial.println("DEBUG: Will continue without KMeter sensor");
+        ESP_LOGW(TAG, "KMeter-ISO sensor initialization failed, continuing without sensor");
     }
     
     Config::saveAutoPWMEnabled(true);
-    Serial.println("DEBUG: Auto-PWM enabled for fan control");
+    ESP_LOGI(TAG, "Auto-PWM enabled for fan control");
     
-    server.begin();
-    Serial.print("Web server started on port ");
-    Serial.println(Config::HTTP_PORT);
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = Config::HTTP_PORT;
+    config.max_uri_handlers = 50;  // Increased to accommodate all routes
+    config.stack_size = 8192;
+    config.uri_match_fn = httpd_uri_match_wildcard;  // Enable wildcard/query string matching
+    
+    if (httpd_start(&server, &config) == ESP_OK) {
+        setupRoutes();
+        ESP_LOGI(TAG, "Web server started on port %d", Config::HTTP_PORT);
+    } else {
+        ESP_LOGE(TAG, "Failed to start web server");
+    }
+}
+
+void ServerManager::setupRoutes() {
+    // Static files
+    httpd_uri_t root_uri = {.uri = "/", .method = HTTP_GET, .handler = root_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &root_uri);
+    
+    httpd_uri_t login_uri = {.uri = "/login.html", .method = HTTP_GET, .handler = login_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &login_uri);
+    
+    httpd_uri_t main_uri = {.uri = "/main.html", .method = HTTP_GET, .handler = main_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &main_uri);
+    
+    // Alias for main page without .html extension
+    httpd_uri_t main_alias_uri = {.uri = "/main", .method = HTTP_GET, .handler = main_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &main_alias_uri);
+    
+    httpd_uri_t style_uri = {.uri = "/style.css", .method = HTTP_GET, .handler = style_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &style_uri);
+    
+    httpd_uri_t logo_uri = {.uri = "/img/logo.png", .method = HTTP_GET, .handler = logo_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &logo_uri);
+    
+    httpd_uri_t setting_uri = {.uri = "/setting.html", .method = HTTP_GET, .handler = setting_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &setting_uri);
+    
+    // Alias for setting page without .html extension
+    httpd_uri_t setting_alias_uri = {.uri = "/setting", .method = HTTP_GET, .handler = setting_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &setting_alias_uri);
+    
+    // API endpoints
+    httpd_uri_t api_status = {.uri = "/api/status", .method = HTTP_GET, .handler = api_status_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_status);
+    
+    httpd_uri_t api_device_name = {.uri = "/api/device-name", .method = HTTP_POST, .handler = api_device_name_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_device_name);
+    
+    httpd_uri_t api_reboot = {.uri = "/api/reboot", .method = HTTP_POST, .handler = api_reboot_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_reboot);
+    
+    httpd_uri_t api_wifi_status = {.uri = "/api/wifi/status", .method = HTTP_GET, .handler = api_wifi_status_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_wifi_status);
+    
+    // Alias for compatibility with HTML files
+    httpd_uri_t api_wifi_status_alt = {.uri = "/api/wifi-status", .method = HTTP_GET, .handler = api_wifi_status_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_wifi_status_alt);
+    
+    httpd_uri_t api_pwm_status = {.uri = "/api/pwm/status", .method = HTTP_GET, .handler = api_pwm_status_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_pwm_status);
+    
+    // Alias for compatibility with HTML files
+    httpd_uri_t api_pwm_status_alt = {.uri = "/api/pwm-status", .method = HTTP_GET, .handler = api_pwm_status_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_pwm_status_alt);
+    
+    httpd_uri_t api_pwm_control = {.uri = "/api/pwm/control", .method = HTTP_POST, .handler = api_pwm_control_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_pwm_control);
+    
+    httpd_uri_t api_login = {.uri = "/api/login", .method = HTTP_POST, .handler = api_login_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_login);
+    
+    // POST handler for login form
+    httpd_uri_t login_post = {.uri = "/login", .method = HTTP_POST, .handler = login_post_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &login_post);
+    
+    // System & Device APIs
+    httpd_uri_t api_system_info = {.uri = "/api/system-info", .method = HTTP_GET, .handler = api_system_info_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_system_info);
+    
+    httpd_uri_t api_settings = {.uri = "/api/settings", .method = HTTP_GET, .handler = api_settings_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_settings);
+    
+    httpd_uri_t api_restart = {.uri = "/api/restart", .method = HTTP_POST, .handler = api_restart_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_restart);
+    
+    httpd_uri_t api_factory_reset = {.uri = "/api/factory-reset", .method = HTTP_POST, .handler = api_factory_reset_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_factory_reset);
+    
+    // WiFi APIs
+    httpd_uri_t api_wifi_scan = {.uri = "/api/wifi-scan*", .method = HTTP_GET, .handler = api_wifi_scan_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_wifi_scan);
+    
+    httpd_uri_t wifi_connect = {.uri = "/wifi_connect", .method = HTTP_POST, .handler = api_wifi_connect_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &wifi_connect);
+    
+    httpd_uri_t api_wifi_disconnect = {.uri = "/api/wifi-disconnect", .method = HTTP_POST, .handler = api_wifi_disconnect_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_wifi_disconnect);
+    
+    httpd_uri_t api_wifi_clear = {.uri = "/api/wifi-clear", .method = HTTP_POST, .handler = api_wifi_clear_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_wifi_clear);
+    
+    httpd_uri_t api_toggle_ap = {.uri = "/api/toggle-ap", .method = HTTP_POST, .handler = api_toggle_ap_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_toggle_ap);
+    
+    // MQTT APIs
+    httpd_uri_t api_mqtt_settings = {.uri = "/api/mqtt-settings", .method = HTTP_POST, .handler = api_mqtt_settings_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_mqtt_settings);
+    
+    httpd_uri_t api_mqtt_test = {.uri = "/api/mqtt-test", .method = HTTP_POST, .handler = api_mqtt_test_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_mqtt_test);
+    
+    // PWM & Sensor APIs
+    httpd_uri_t api_manual_pwm_mode = {.uri = "/api/manual-pwm-mode", .method = HTTP_POST, .handler = api_manual_pwm_mode_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_manual_pwm_mode);
+    
+    httpd_uri_t api_manual_pwm_settings = {.uri = "/api/manual-pwm-settings", .method = HTTP_POST, .handler = api_manual_pwm_settings_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_manual_pwm_settings);
+    
+    httpd_uri_t api_temp_mapping = {.uri = "/api/temp-mapping", .method = HTTP_POST, .handler = api_temp_mapping_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_temp_mapping);
+    
+    httpd_uri_t api_temp_mapping_status = {.uri = "/api/temp-mapping-status*", .method = HTTP_GET, .handler = api_temp_mapping_status_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_temp_mapping_status);
+    
+    httpd_uri_t api_kmeter_status = {.uri = "/api/kmeter-status*", .method = HTTP_GET, .handler = api_kmeter_status_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_kmeter_status);
+    
+    httpd_uri_t api_kmeter_config = {.uri = "/api/kmeter-config", .method = HTTP_POST, .handler = api_kmeter_config_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_kmeter_config);
+    
+    // LED & Auth APIs
+    httpd_uri_t api_led_toggle = {.uri = "/api/led-toggle", .method = HTTP_POST, .handler = api_led_toggle_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_led_toggle);
+    
+    httpd_uri_t api_change_password = {.uri = "/api/change-password", .method = HTTP_POST, .handler = api_change_password_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_change_password);
+    
+    httpd_uri_t api_logout = {.uri = "/api/logout", .method = HTTP_POST, .handler = api_logout_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_logout);
+    
+    // Also support GET for logout
+    httpd_uri_t api_logout_get = {.uri = "/api/logout", .method = HTTP_GET, .handler = api_logout_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_logout_get);
+    
+    ESP_LOGI(TAG, "All routes registered");
+}
+
+void ServerManager::handleClient() {
+    // Empty for ESP-IDF - HTTP server is async
+}
+
+// Helper function to serve files from SPIFFS
+static esp_err_t serve_spiffs_file(httpd_req_t *req, const char* filepath, const char* content_type) {
+    FILE* f = fopen(filepath, "r");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file: %s", filepath);
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+    
+    httpd_resp_set_type(req, content_type);
+    
+    char buffer[512];
+    size_t read_bytes;
+    while ((read_bytes = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+        if (httpd_resp_send_chunk(req, buffer, read_bytes) != ESP_OK) {
+            fclose(f);
+            return ESP_FAIL;
+        }
+    }
+    
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
 }
 
 void ServerManager::initializePWM() {
-    Serial.println("DEBUG: Initializing PWM system...");
-
+    ESP_LOGI(TAG, "Initializing PWM system...");
+    
     uint32_t freq = Config::MANUAL_PWM_MODE ? Config::MANUAL_PWM_FREQ : 1000;
     
-    if (ledcSetup(0, freq, 8)) {
-        Serial.printf("DEBUG: PWM Channel 0 setup successful with %u Hz\n", freq);
-
-        ledcAttachPin(22, 0);
-        Serial.println("DEBUG: PWM Pin 22 attached to channel 0");
-
-        ledcWrite(0, 0);
-        Serial.println("DEBUG: PWM initialized - Pin 22 set to 0%");
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_8_BIT,
+        .timer_num = LEDC_TIMER_0,
+        .freq_hz = freq,
+        .clk_cfg = LEDC_AUTO_CLK,
+        .deconfigure = false
+    };
+    
+    if (ledc_timer_config(&ledc_timer) == ESP_OK) {
+        ESP_LOGI(TAG, "PWM Timer configured with %lu Hz", freq);
+        
+        ledc_channel_config_t ledc_channel = {
+            .gpio_num = 22,
+            .speed_mode = LEDC_LOW_SPEED_MODE,
+            .channel = LEDC_CHANNEL_0,
+            .intr_type = LEDC_INTR_DISABLE,
+            .timer_sel = LEDC_TIMER_0,
+            .duty = 0,
+            .hpoint = 0,
+            .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
+            .flags = {
+                .output_invert = 0
+            }
+        };
+        
+        if (ledc_channel_config(&ledc_channel) == ESP_OK) {
+            ESP_LOGI(TAG, "PWM Channel configured - Pin 22 attached");
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+            ESP_LOGI(TAG, "PWM initialized - Pin 22 set to 0%%");
+        } else {
+            ESP_LOGE(TAG, "PWM Channel config failed");
+        }
     } else {
-        Serial.println("ERROR: PWM Channel 0 setup failed");
+        ESP_LOGE(TAG, "PWM Timer config failed");
     }
 }
 
 void ServerManager::reconfigurePWM(uint32_t frequency) {
-    Serial.printf("DEBUG: Reconfiguring PWM to %u Hz...\n", frequency);
+    ESP_LOGI(TAG, "Reconfiguring PWM to %lu Hz...", frequency);
     
-    // Detach pin first
-    ledcDetachPin(22);
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_8_BIT,
+        .timer_num = LEDC_TIMER_0,
+        .freq_hz = frequency,
+        .clk_cfg = LEDC_AUTO_CLK,
+        .deconfigure = false
+    };
     
-    // Reconfigure with new frequency
-    if (ledcSetup(0, frequency, 8)) {
-        Serial.printf("DEBUG: PWM Channel 0 reconfigured to %u Hz\n", frequency);
+    if (ledc_timer_config(&ledc_timer) == ESP_OK) {
+        ESP_LOGI(TAG, "PWM reconfigured to %lu Hz", frequency);
         
-        // Reattach pin
-        ledcAttachPin(22, 0);
-        Serial.println("DEBUG: PWM Pin 22 reattached to channel 0");
-        
-        // Restore duty cycle if in manual mode
         if (Config::MANUAL_PWM_MODE) {
-            int duty = map(Config::MANUAL_PWM_DUTY, 0, 100, 0, 255);
-            ledcWrite(0, duty);
-            Serial.printf("DEBUG: PWM duty restored to %u%%\n", Config::MANUAL_PWM_DUTY);
+            int duty = (Config::MANUAL_PWM_DUTY * 255) / 100;
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+            ESP_LOGI(TAG, "PWM duty restored to %d%%", Config::MANUAL_PWM_DUTY);
         }
     } else {
-        Serial.println("ERROR: PWM reconfiguration failed");
+        ESP_LOGE(TAG, "PWM reconfiguration failed");
     }
 }
 
 void ServerManager::setPWMDuty(int duty) {
     if (duty < 0 || duty > 255) {
-        Serial.printf("ERROR: Invalid PWM duty cycle: %d (must be 0-255)\n", duty);
+        ESP_LOGE(TAG, "Invalid PWM duty cycle: %d (must be 0-255)", duty);
         return;
     }
     
-    ledcWrite(0, duty);
-    Serial.printf("PWM Pin 22 set to duty cycle %d (%.1f%%)\n", duty, (duty / 255.0) * 100);
-    
-    mqttManager.publishFanSpeed(duty);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 }
 
 void ServerManager::updateSensors() {
     kmeterManager.update();
-    
-    if (kmeterManager.isInitialized() && kmeterManager.isReady()) {
-        float temp = kmeterManager.getTemperatureCelsius();
-        mqttManager.publishTemperature(temp);
-    }
-    
-    updateAutoPWM();
 }
 
-void ServerManager::handleClient() {
-    server.handleClient();
-}
-
-void ServerManager::setupRoutes() {
-  server.on("/", HTTP_GET, [this]() {
-    server.sendHeader("Location", "/main");
-    server.send(302);
-  });
-  server.on("/main", HTTP_GET, [this]() { handleMain(); });
-  server.on("/style.css", HTTP_GET, [this]() {
-    size_t len = _binary_data_style_css_end - _binary_data_style_css_start;
-    server.setContentLength(len);
-    server.send(200, "text/css", "");
-    server.sendContent_P(reinterpret_cast<const char*>(_binary_data_style_css_start), len);
-  });
-  server.on("/favicon.ico", HTTP_GET, [this]() { server.send(204); });
-  server.on("/index", HTTP_GET, [this]() {
-    server.sendHeader("Location", "/main");
-    server.send(302);
-  });
-  server.on("/login", HTTP_GET, [this]() { handleLogin(); });
-  server.on("/login", HTTP_POST, [this]() { handleLogin(); });
-  server.onNotFound([this]() { handleNotFound(); });
-
-  server.on("/img/logo.png", HTTP_GET, [this]() {
-    size_t len = _binary_data_img_logo_png_end - _binary_data_img_logo_png_start;
-    server.setContentLength(len);
-    server.send(200, "image/png", "");
-    server.sendContent_P(reinterpret_cast<const char*>(_binary_data_img_logo_png_start), len);
-  });
-  server.on("/setting", HTTP_GET, [this]() { handleSetting(); });
-  server.on("/wifi_connect", HTTP_POST, [this]() { handleWifiConnect(); });
-  
-  server.on("/api/device-name", HTTP_POST, [this]() { handleDeviceName(); });
-  server.on("/api/reboot", HTTP_POST, [this]() { handleReboot(); });
-  server.on("/api/factory-reset", HTTP_POST, [this]() { handleFactoryReset(); });
-  server.on("/api/change-password", HTTP_POST, [this]() { handleChangePassword(); });
-  server.on("/api/temp-unit", HTTP_POST, [this]() { handleTempUnit(); });
-  server.on("/api/toggle-ap", HTTP_POST, [this]() { handleToggleAP(); });
-  server.on("/api/mqtt-settings", HTTP_POST, [this]() { handleMQTTSettings(); });
-  server.on("/api/mqtt-test", HTTP_POST, [this]() { handleMQTTTest(); });
-  server.on("/api/mqtt-status", HTTP_GET, [this]() { handleMQTTStatus(); });
-  server.on("/api/wifi-status", HTTP_GET, [this]() { handleWiFiStatus(); });
-  server.on("/api/wifi-scan", HTTP_GET, [this]() { handleWiFiScan(); });
-  server.on("/api/wifi-disconnect", HTTP_POST, [this]() { handleWiFiDisconnect(); });
-  server.on("/api/wifi-clear", HTTP_POST, [this]() { handleWiFiClear(); });
-  server.on("/api/led-toggle", HTTP_POST, [this]() { handleLEDToggle(); });
-  server.on("/api/status", HTTP_GET, [this]() { handleStatus(); });
-  server.on("/api/settings", HTTP_GET, [this]() { handleGetSettings(); });
-  server.on("/api/pwm-control", HTTP_POST, [this]() { 
-    Serial.println("DEBUG: PWM Control route triggered");
-    handlePWMControl(); 
-  });
-  server.on("/api/pwm-status", HTTP_GET, [this]() { 
-    Serial.println("DEBUG: PWM Status route triggered");
-    handlePWMStatus(); 
-  });
-  server.on("/api/system-info", HTTP_GET, [this]() { 
-    Serial.println("DEBUG: System Info route triggered");
-    handleSystemInfo(); 
-  });
-  server.on("/api/kmeter-status", HTTP_GET, [this]() { 
-    Serial.println("DEBUG: KMeter Status route triggered");
-    handleKMeterStatus(); 
-  });
-  server.on("/api/kmeter-config", HTTP_POST, [this]() { 
-    Serial.println("DEBUG: KMeter Config route triggered");
-    handleKMeterConfig(); 
-  });
-  server.on("/api/temp-mapping", HTTP_POST, [this]() { 
-    Serial.println("DEBUG: Temperature Mapping route triggered");
-    handleTempMapping(); 
-  });
-  server.on("/api/temp-mapping-status", HTTP_GET, [this]() { 
-    Serial.println("DEBUG: Temperature Mapping Status route triggered");
-    handleTempMappingStatus(); 
-  });
-  server.on("/api/auto-pwm", HTTP_POST, [this]() { 
-    Serial.println("DEBUG: Auto PWM route triggered");
-    handleAutoPWM(); 
-  });
-  server.on("/api/manual-pwm-mode", HTTP_POST, [this]() { 
-    Serial.println("DEBUG: Manual PWM Mode route triggered");
-    handleManualPWMMode(); 
-  });
-  server.on("/api/manual-pwm-settings", HTTP_POST, [this]() { 
-    Serial.println("DEBUG: Manual PWM Settings route triggered");
-    handleManualPWMSettings(); 
-  });
-  
-  server.on("/api/firmware-update", HTTP_POST, 
-    [this]() { 
-    },
-    [this]() { 
-      // This is called during upload process
-      handleFirmwareUpdate(); 
-    }
-  );
-}
-
-void ServerManager::handleRoot() {
-    if (!isAuthenticated()) {
-        server.sendHeader("Location", "/login");
-        server.send(302);
-        return;
-    }
-    String html(reinterpret_cast<const char*>(_binary_data_index_html_start),
-                _binary_data_index_html_end - _binary_data_index_html_start);
-
-    String pageContent(reinterpret_cast<const char*>(_binary_data_main_html_start),
-                       _binary_data_main_html_end - _binary_data_main_html_start);
-
-    html.replace("%CONTENT%", pageContent);
-    html.replace("%DEVICE_NAME%", Config::DEVICE_NAME);
-    html.replace("%TOKEN%", sessionToken);
-    html.replace("%HOME_ACTIVE%", "active");
-    html.replace("%SETTING_ACTIVE%", "");
-
-    server.setContentLength(html.length());
-    server.send(200, "text/html", html);
-}
-
-void ServerManager::handleLogin() {
-  Serial.println("Login handler called");
-  
-  if (server.method() == HTTP_POST) {
-    Serial.println("POST request received");
-    String password = server.arg("password");
-    
-    if (password == Config::WEB_PASSWORD) {
-      Serial.println("Password correct - redirecting");
-      sessionToken = String(random(0xffff), HEX);
-      
-      server.sendHeader("Location", "/main?token=" + sessionToken);
-      server.send(302);
-      return;
+int ServerManager::mapTemperatureToPWM(float temperature) {
+    if (temperature <= Config::TEMP_START) {
+        return 0;
+    } else if (temperature >= Config::TEMP_MAX) {
+        return 255;
     } else {
-      Serial.println("Password incorrect");
+        float range = Config::TEMP_MAX - Config::TEMP_START;
+        float temp_above_start = temperature - Config::TEMP_START;
+        return (int)((temp_above_start / range) * 255.0);
     }
-  } else {
-    Serial.println("GET request - showing login page");
-  }
-  
-  Serial.println("Sending login page");
-  size_t len = _binary_data_login_html_end - _binary_data_login_html_start;
-  server.setContentLength(len);
-  server.send(200, "text/html", "");
-  server.sendContent_P(reinterpret_cast<const char*>(_binary_data_login_html_start), len);
 }
 
-void ServerManager::handleNotFound() {
-    Serial.println("404 - Page not found: " + server.uri());
-    server.send(404, "text/plain", "Nicht gefunden");
-}
-
-void ServerManager::handleMain() {
-    if (!isAuthenticated()) {
-        server.sendHeader("Location", "/login");
-        server.send(302);
+void ServerManager::updateAutoPWM() {
+    if (!Config::AUTO_PWM_ENABLED || Config::MANUAL_PWM_MODE) {
         return;
     }
     
-    String html(reinterpret_cast<const char*>(_binary_data_main_html_start),
-                _binary_data_main_html_end - _binary_data_main_html_start);
-
-    html.replace("%DEVICE_NAME%", Config::DEVICE_NAME);
-    html.replace("%TOKEN%", sessionToken);
-
-    server.setContentLength(html.length());
-    server.send(200, "text/html", html);
+    float temp = kmeterManager.getTemperatureCelsius();
+    if (temp > 0) {
+        int pwm = mapTemperatureToPWM(temp);
+        setPWMDuty(pwm);
+    }
 }
 
-bool ServerManager::isAuthenticated() {
-    if (server.hasArg("token")) {
-        return server.arg("token") == sessionToken;
-    }
-    return false;
+// Static HTTP Handlers
+void ServerManager::send_json_response(httpd_req_t *req, const char* json) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
 }
 
-void ServerManager::handleSetting() {
-    Serial.println("DEBUG: handleSetting() called");
-    
-    if (!isAuthenticated()) {
-        Serial.println("DEBUG: handleSetting() - Authentication failed, redirecting to login");
-        server.sendHeader("Location", "/login");
-        server.send(302);
-        return;
+bool ServerManager::check_auth(httpd_req_t *req) {
+    // Check for token in URL parameter
+    char query[128] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char token[32] = {0};
+        if (httpd_query_key_value(query, "token", token, sizeof(token)) == ESP_OK) {
+            return is_valid_token(token);
+        }
     }
-    
-    Serial.println("DEBUG: handleSetting() - Authentication successful");
-    
-    extern const uint8_t _binary_data_setting_html_start[] asm("_binary_data_setting_html_start");
-    extern const uint8_t _binary_data_setting_html_end[]   asm("_binary_data_setting_html_end");
-    
-    size_t htmlSize = _binary_data_setting_html_end - _binary_data_setting_html_start;
-    Serial.printf("DEBUG: setting.html binary size: %d bytes\n", htmlSize);
-    
-    const char* htmlData = reinterpret_cast<const char*>(_binary_data_setting_html_start);
-    
-    server.setContentLength(htmlSize);
-    server.send_P(200, "text/html", htmlData, htmlSize);
-    
-    Serial.println("DEBUG: HTML response sent directly");
+    return false; // Not authenticated
 }
 
-void ServerManager::handleWifiConnect() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    String ssid = server.arg("ssid");
-    String password = server.arg("password");
+// Token storage (simple in-memory storage, will be reset on reboot)
+static char current_token[9] = {0};
+static uint64_t token_created = 0;
+static const uint64_t TOKEN_EXPIRY = 24ULL * 60ULL * 60ULL * 1000000ULL; // 24 hours in microseconds
 
-    Preferences prefs;
-    if (prefs.begin("wifi", false)) {
-        prefs.putString("ssid", ssid);
-        prefs.putString("password", password);
-        prefs.end();
-        Serial.println("WiFi credentials saved");
+char* ServerManager::generate_token() {
+    // Generate a simple 4-character hex token (like "83f8" in your screenshot)
+    uint32_t random_num = esp_random() & 0xFFFF; // 16-bit random number
+    snprintf(current_token, sizeof(current_token), "%04lx", (unsigned long)random_num);
+    token_created = esp_timer_get_time();
+    ESP_LOGI(TAG, "Generated new token: %s", current_token);
+    return current_token;
+}
+
+bool ServerManager::is_valid_token(const char* token) {
+    if (!token || strlen(token) == 0) {
+        return false;
+    }
+    
+    // Check if token matches
+    if (strcmp(token, current_token) != 0) {
+        ESP_LOGI(TAG, "Invalid token: %s (expected: %s)", token, current_token);
+        return false;
+    }
+    
+    // Check if token is expired (24 hours)
+    uint64_t current_time = esp_timer_get_time();
+    if (current_time - token_created > TOKEN_EXPIRY) {
+        ESP_LOGI(TAG, "Token expired");
+        return false;
+    }
+    
+    return true;
+}
+
+bool ServerManager::check_token(httpd_req_t *req) {
+    return check_auth(req);
+}
+
+esp_err_t ServerManager::root_handler(httpd_req_t *req) {
+    // Check for token in URL
+    if (!check_auth(req)) {
+        // No valid token - show login page
+        return serve_spiffs_file(req, "/spiffs/login.html", "text/html");
+    }
+    // Valid token - show main page
+    return serve_spiffs_file(req, "/spiffs/main.html", "text/html");
+}
+
+esp_err_t ServerManager::login_handler(httpd_req_t *req) {
+    return serve_spiffs_file(req, "/spiffs/login.html", "text/html");
+}
+
+esp_err_t ServerManager::main_handler(httpd_req_t *req) {
+    return serve_spiffs_file(req, "/spiffs/main.html", "text/html");
+}
+
+esp_err_t ServerManager::setting_handler(httpd_req_t *req) {
+    return serve_spiffs_file(req, "/spiffs/setting.html", "text/html");
+}
+
+esp_err_t ServerManager::style_handler(httpd_req_t *req) {
+    return serve_spiffs_file(req, "/spiffs/style.css", "text/css");
+}
+
+esp_err_t ServerManager::logo_handler(httpd_req_t *req) {
+    return serve_spiffs_file(req, "/spiffs/img/logo.png", "image/png");
+}
+
+esp_err_t ServerManager::api_status_handler(httpd_req_t *req) {
+    DynamicJsonDocument doc(768);
+    doc["status"] = "online";
+    doc["device_name"] = Config::DEVICE_NAME;
+    doc["firmware"] = Config::FIRMWARE_VERSION;
+    doc["wifi_connected"] = wifi.isConnected();
+    doc["mqtt_connected"] = mqttManager.isConnected();
+    
+    // Get WiFi RSSI
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        doc["wifi_rssi"] = ap_info.rssi;
     } else {
-        Serial.println("Error: Failed to save WiFi credentials");
-        server.send(500, "text/plain", "Failed to save credentials");
-        return;
+        doc["wifi_rssi"] = 0;
     }
-
-    wifi.beginSTA(ssid.c_str(), password.c_str());
-    server.send(200, "text/plain", "OK");
-}
-
-void ServerManager::handleDeviceName() {
-    if (!isAuthenticated()) {
-        server.send(401, "application/json", "{\"success\":false,\"error\":\"Unauthorized\"}");
-        return;
-    }
-    String deviceName = server.arg("name");
-    if (deviceName.length() > 0 && deviceName.length() < 32) {
-        Config::saveDeviceName(deviceName.c_str());
-        server.send(200, "application/json", "{\"success\":true,\"message\":\"Device name saved\"}");
+    
+    // Uptime in human readable format
+    uint64_t uptime_sec = esp_timer_get_time() / 1000000;
+    uint32_t days = uptime_sec / 86400;
+    uint32_t hours = (uptime_sec % 86400) / 3600;
+    uint32_t minutes = (uptime_sec % 3600) / 60;
+    char uptime_str[64];
+    if (days > 0) {
+        snprintf(uptime_str, sizeof(uptime_str), "%lud %luh %lum", days, hours, minutes);
+    } else if (hours > 0) {
+        snprintf(uptime_str, sizeof(uptime_str), "%luh %lum", hours, minutes);
     } else {
-        server.send(400, "application/json", "{\"success\":false,\"error\":\"Invalid device name\"}");
+        snprintf(uptime_str, sizeof(uptime_str), "%lum", minutes);
     }
+    doc["uptime"] = uptime_str;
+    
+    // Memory info
+    doc["free_memory"] = esp_get_free_heap_size() / 1024; // KB
+    
+    // LED state - TODO: get from LEDManager
+    doc["led_state"] = false;
+    
+    char json[768];
+    serializeJson(doc, json, sizeof(json));
+    send_json_response(req, json);
+    return ESP_OK;
 }
 
-void ServerManager::handleReboot() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
+esp_err_t ServerManager::api_device_name_handler(httpd_req_t *req) {
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf));
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
     }
-    server.send(200, "text/plain", "OK");
-    delay(1000);
-    ESP.restart();
-}
-
-void ServerManager::handleFactoryReset() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    Config::factoryReset();
-    server.send(200, "text/plain", "OK");
-    delay(1000);
-    ESP.restart();
-}
-
-void ServerManager::handleChangePassword() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
+    buf[ret] = '\0';
     
-    String currentPassword = server.arg("current_password");
-    String newPassword = server.arg("new_password");
+    char name[64] = {0};
     
-    if (currentPassword != Config::WEB_PASSWORD) {
-        server.send(200, "text/plain", "INVALID");
-        return;
-    }
-    
-    if (newPassword.length() < 6 || newPassword.length() >= 32) {
-        server.send(400, "text/plain", "Password must be 6-31 characters");
-        return;
-    }
-    
-    if (newPassword == currentPassword) {
-        server.send(400, "text/plain", "New password must be different");
-        return;
-    }
-    
-    Config::saveWebPassword(newPassword.c_str());
-    sessionToken = "";
-    server.send(200, "text/plain", "OK");
-}
-
-void ServerManager::handleTempUnit() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    String tempUnit = server.arg("unit");
-    if (tempUnit == "celsius" || tempUnit == "fahrenheit") {
-        Config::saveTempUnit(tempUnit.c_str());
-        server.send(200, "text/plain", "OK");
+    // Parse form data (name=xxx)
+    if (strstr(buf, "name=")) {
+        char *name_start = strstr(buf, "name=") + 5;
+        char *name_end = strchr(name_start, '&');
+        int len = name_end ? (name_end - name_start) : strlen(name_start);
+        if (len > 0 && len < sizeof(name)) {
+            strncpy(name, name_start, len);
+            name[len] = '\0';
+            // TODO: URL decode name
+        }
     } else {
-        server.send(400, "text/plain", "Invalid temperature unit");
-    }
-}
-
-void ServerManager::handleToggleAP() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    String enable = server.arg("enable");
-    bool apEnabled = (enable == "1");
-    Config::saveAPEnabled(apEnabled);
-    server.send(200, "text/plain", "OK");
-    delay(1000);
-    ESP.restart();
-}
-
-void ServerManager::handleMQTTSettings() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    String server_arg = server.arg("server");
-    String port_arg = server.arg("port");
-    String user_arg = server.arg("user");
-    String pass_arg = server.arg("pass");
-    String topic_arg = server.arg("topic");
-    
-    if (server_arg.length() > 0 && port_arg.toInt() > 0) {
-        uint16_t port = port_arg.toInt();
+        // Parse JSON
+        DynamicJsonDocument doc(128);
+        deserializeJson(doc, buf);
         
-        mqttManager.disconnect();
-        
-        Config::saveMQTTSettings(server_arg.c_str(), port, user_arg.c_str(), pass_arg.c_str(), topic_arg.c_str());
-        
-        mqttManager.begin();
-        
-        server.send(200, "text/plain", "OK");
-    } else {
-        server.send(400, "text/plain", "Invalid MQTT settings");
+        const char* newName = doc["name"];
+        if (newName) {
+            strncpy(name, newName, sizeof(name) - 1);
+        }
     }
+    
+    if (strlen(name) > 0) {
+        Config::saveDeviceName(name);
+        send_json_response(req, "{\"success\":true}");
+    } else {
+        send_json_response(req, "{\"success\":false}");
+    }
+    
+    return ESP_OK;
 }
 
-void ServerManager::handleMQTTTest() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
+esp_err_t ServerManager::api_reboot_handler(httpd_req_t *req) {
+    send_json_response(req, "{\"success\":true,\"message\":\"Rebooting...\"}");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+    return ESP_OK;
+}
+
+esp_err_t ServerManager::api_wifi_status_handler(httpd_req_t *req) {
+    DynamicJsonDocument doc(512);
+    bool isConnected = wifi.isConnected();
+    doc["connected"] = isConnected;
     
-    // Use current MQTT settings for test
-    String testServer = String(Config::MQTT_SERVER);
-    int testPort = Config::MQTT_PORT;
-    String testUser = String(Config::MQTT_USER);
-    String testPass = String(Config::MQTT_PASS);
+    char ip[16];
+    wifi.getLocalIP(ip, sizeof(ip));
+    doc["ip"] = ip;
     
-    if (testServer.length() == 0 || testPort <= 0) {
-        server.send(200, "application/json", "{\"success\":false,\"error\":\"No MQTT server configured\"}");
-        return;
-    }
-    
-    // Test MQTT connection
-    WiFiClient testClient;
-    PubSubClient testMqtt(testClient);
-    
-    testMqtt.setServer(testServer.c_str(), testPort);
-    
-    String clientId = "ESP32-Test-" + String(random(0xffff), HEX);
-    bool connected;
-    
-    if (testUser.length() > 0) {
-        connected = testMqtt.connect(clientId.c_str(), testUser.c_str(), testPass.c_str());
+    if (isConnected) {
+        // Get SSID
+        wifi_config_t wifi_config;
+        if (esp_wifi_get_config(WIFI_IF_STA, &wifi_config) == ESP_OK) {
+            doc["ssid"] = (char*)wifi_config.sta.ssid;
+        } else {
+            doc["ssid"] = "Unknown";
+        }
+        
+        // Get MAC address
+        uint8_t mac[6];
+        esp_wifi_get_mac(WIFI_IF_STA, mac);
+        char macStr[18];
+        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        doc["mac"] = macStr;
+        
+        // Get RSSI (signal strength)
+        wifi_ap_record_t ap_info;
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            doc["rssi"] = ap_info.rssi;
+        } else {
+            doc["rssi"] = 0;
+        }
     } else {
-        connected = testMqtt.connect(clientId.c_str());
+        doc["ssid"] = "Nicht verbunden";
+        
+        // Still provide MAC even when disconnected
+        uint8_t mac[6];
+        esp_wifi_get_mac(WIFI_IF_STA, mac);
+        char macStr[18];
+        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        doc["mac"] = macStr;
+        doc["rssi"] = 0;
     }
+    
+    char json[512];
+    serializeJson(doc, json, sizeof(json));
+    send_json_response(req, json);
+    return ESP_OK;
+}
+
+esp_err_t ServerManager::api_pwm_status_handler(httpd_req_t *req) {
+    DynamicJsonDocument doc(512);
+    doc["manual_mode"] = Config::MANUAL_PWM_MODE;
+    doc["manual_freq"] = Config::MANUAL_PWM_FREQ;
+    doc["manual_duty"] = Config::MANUAL_PWM_DUTY;
+    doc["frequency"] = Config::MANUAL_PWM_FREQ; // Alias
+    doc["duty"] = Config::MANUAL_PWM_DUTY; // Alias
+    doc["auto_pwm"] = Config::AUTO_PWM_ENABLED;
+    
+    // Get current duty cycle from hardware
+    uint32_t duty_raw = ledc_get_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    doc["duty_raw"] = duty_raw;
+    doc["duty_percent"] = (duty_raw * 100) / 255;
+    
+    char json[512];
+    serializeJson(doc, json, sizeof(json));
+    send_json_response(req, json);
+    return ESP_OK;
+}
+
+esp_err_t ServerManager::api_pwm_control_handler(httpd_req_t *req) {
+    char buf[256];
+    int ret = httpd_req_recv(req, buf, sizeof(buf));
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    
+    DynamicJsonDocument doc(256);
+    deserializeJson(doc, buf);
+    
+    if (doc.containsKey("duty")) {
+        int duty = doc["duty"];
+        duty = (duty * 255) / 100; // Convert 0-100 to 0-255
+        serverInstance->setPWMDuty(duty);
+    }
+    
+    if (doc.containsKey("frequency")) {
+        uint32_t freq = doc["frequency"];
+        serverInstance->reconfigurePWM(freq);
+        Config::saveManualPWMSettings(freq, Config::MANUAL_PWM_DUTY);
+    }
+    
+    send_json_response(req, "{\"success\":true}");
+    return ESP_OK;
+}
+
+esp_err_t ServerManager::api_login_handler(httpd_req_t *req) {
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    DynamicJsonDocument doc(256);
+    deserializeJson(doc, buf);
+    
+    const char* password = doc["password"];
+    
+    // Validate password against Config::WEB_PASSWORD
+    bool isValid = (password != nullptr && strcmp(password, Config::WEB_PASSWORD) == 0);
+    
+    if (isValid) {
+        // Generate new token
+        char* token = generate_token();
+        
+        // Return token in JSON response
+        char response[128];
+        snprintf(response, sizeof(response), "{\"success\":true,\"token\":\"%s\"}", token);
+        send_json_response(req, response);
+    } else {
+        send_json_response(req, "{\"success\":false,\"error\":\"Invalid password\"}");
+    }
+    
+    return ESP_OK;
+}
+
+// POST handler for HTML login form (receives form-urlencoded data)
+esp_err_t ServerManager::login_post_handler(httpd_req_t *req) {
+    char buf[256];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    ESP_LOGI(TAG, "Login POST data: %s", buf);
+    
+    // Parse form data: password=xxx&rememberMe=on
+    char password[64] = {0};
+    char *pwd_start = strstr(buf, "password=");
+    if (pwd_start) {
+        pwd_start += 9; // Skip "password="
+        char *pwd_end = strchr(pwd_start, '&');
+        int len = pwd_end ? (pwd_end - pwd_start) : strlen(pwd_start);
+        if (len > 0 && len < sizeof(password)) {
+            strncpy(password, pwd_start, len);
+            password[len] = '\0';
+            
+            // URL decode (replace %20 with space, etc.)
+            // Simple implementation - just check for basic chars
+            ESP_LOGI(TAG, "Password received (length: %d)", strlen(password));
+        }
+    }
+    
+    // Validate password against Config::WEB_PASSWORD
+    bool isValid = (strlen(password) > 0 && strcmp(password, Config::WEB_PASSWORD) == 0);
+    
+    if (isValid) {
+        ESP_LOGI(TAG, "Login successful");
+        
+        // Generate new token
+        char* token = generate_token();
+        
+        // Redirect to index page with token
+        char location[128];
+        snprintf(location, sizeof(location), "/?token=%s", token);
+        
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", location);
+        httpd_resp_send(req, NULL, 0);
+    } else {
+        ESP_LOGI(TAG, "Login failed - invalid password");
+        // Redirect back to login with error
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "/login.html?error=1");
+        httpd_resp_send(req, NULL, 0);
+    }
+    
+    return ESP_OK;
+}
+
+// System Info Handler
+esp_err_t ServerManager::api_system_info_handler(httpd_req_t *req) {
+    DynamicJsonDocument doc(1024);
+    
+    esp_chip_info_t chip_info;
+    esp_chip_info(&chip_info);
+    
+    // Basic chip info
+    doc["chipModel"] = "ESP32-PICO-D4";
+    doc["chipCores"] = chip_info.cores;
+    doc["chipRevision"] = chip_info.revision;
+    
+    uint32_t flash_size;
+    esp_flash_get_size(NULL, &flash_size);
+    doc["flashSize"] = flash_size / (1024 * 1024);
+    
+    doc["freeHeap"] = esp_get_free_heap_size();
+    doc["minFreeHeap"] = esp_get_minimum_free_heap_size();
+    doc["uptime"] = esp_timer_get_time() / 1000000;
+    doc["sdkVersion"] = esp_get_idf_version();
+    
+    // Device info needed by HTML
+    doc["device_name"] = Config::DEVICE_NAME;
+    doc["firmware_version"] = Config::FIRMWARE_VERSION;
+    
+    // WiFi info
+    char ip[16];
+    wifi.getLocalIP(ip, sizeof(ip));
+    doc["wifi_ip"] = ip;
+    doc["wifi_connected"] = wifi.isConnected();
+    
+    // Get WiFi SSID and other info
+    wifi_config_t wifi_config;
+    if (esp_wifi_get_config(WIFI_IF_STA, &wifi_config) == ESP_OK) {
+        doc["wifi_ssid"] = (char*)wifi_config.sta.ssid;
+    } else {
+        doc["wifi_ssid"] = "Unknown";
+    }
+    
+    // Get MAC address
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    char macStr[18];
+    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    doc["wifi_mac"] = macStr;
+    
+    // Get RSSI (signal strength)
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        doc["wifi_rssi"] = ap_info.rssi;
+    } else {
+        doc["wifi_rssi"] = 0;
+    }
+    
+    // MQTT status
+    doc["mqtt_connected"] = mqttManager.isConnected();
+    
+    char response[1024];
+    serializeJson(doc, response, sizeof(response));
+    send_json_response(req, response);
+    return ESP_OK;
+}
+
+// Settings Handler - returns all current settings
+esp_err_t ServerManager::api_settings_handler(httpd_req_t *req) {
+    DynamicJsonDocument doc(1536);
+    doc["device_name"] = Config::DEVICE_NAME;
+    doc["deviceName"] = Config::DEVICE_NAME; // Alias for compatibility
+    doc["mqtt_server"] = Config::MQTT_SERVER;
+    doc["mqttServer"] = Config::MQTT_SERVER; // Alias
+    doc["mqtt_port"] = Config::MQTT_PORT;
+    doc["mqttPort"] = Config::MQTT_PORT; // Alias
+    doc["mqtt_user"] = Config::MQTT_USER;
+    doc["mqttUser"] = Config::MQTT_USER; // Alias
+    doc["mqtt_pass"] = ""; // Don't send password back
+    doc["mqttPass"] = ""; // Alias
+    doc["mqtt_topic"] = Config::MQTT_TOPIC;
+    doc["mqttTopic"] = Config::MQTT_TOPIC; // Alias
+    doc["mqtt_connected"] = mqttManager.isConnected();
+    doc["manual_freq"] = Config::MANUAL_PWM_FREQ;
+    doc["manualPWMFreq"] = Config::MANUAL_PWM_FREQ; // Alias
+    doc["manual_duty"] = Config::MANUAL_PWM_DUTY;
+    doc["manualPWMDuty"] = Config::MANUAL_PWM_DUTY; // Alias
+    doc["manual_mode"] = Config::MANUAL_PWM_MODE;
+    doc["manualPWMMode"] = Config::MANUAL_PWM_MODE; // Alias
+    doc["auto_pwm"] = Config::AUTO_PWM_ENABLED;
+    doc["autoPWMEnabled"] = Config::AUTO_PWM_ENABLED; // Alias
+    doc["startTemp"] = Config::TEMP_START;
+    doc["tempStart"] = Config::TEMP_START; // Alias
+    doc["maxTemp"] = Config::TEMP_MAX;
+    doc["tempMax"] = Config::TEMP_MAX; // Alias
+    doc["temp_unit"] = Config::TEMP_UNIT;
+    doc["tempUnit"] = Config::TEMP_UNIT; // Alias
+    
+    // Get actual AP status from WiFi mode
+    wifi_mode_t mode;
+    bool ap_running = false;
+    if (esp_wifi_get_mode(&mode) == ESP_OK) {
+        ap_running = (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA);
+    }
+    doc["ap_enabled"] = ap_running;
+    doc["apEnabled"] = ap_running; // Alias
+    
+    doc["led_state"] = false; // TODO: Get from LEDManager
+    doc["firmware_version"] = Config::FIRMWARE_VERSION;
+    doc["last_password_change"] = "Nie"; // TODO: Track this in NVS
+    
+    char response[1536];
+    serializeJson(doc, response, sizeof(response));
+    send_json_response(req, response);
+    return ESP_OK;
+}
+
+// Restart Handler
+esp_err_t ServerManager::api_restart_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Restart requested");
+    send_json_response(req, "{\"success\":true,\"message\":\"Restarting...\"}");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+    return ESP_OK;
+}
+
+// Factory Reset Handler
+esp_err_t ServerManager::api_factory_reset_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Factory reset requested");
+    
+    // Clear NVS
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK) {
+        nvs_erase_all(nvs_handle);
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+    }
+    
+    send_json_response(req, "{\"success\":true,\"message\":\"Factory reset complete. Restarting...\"}");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+    return ESP_OK;
+}
+
+// WiFi Scan Handler
+esp_err_t ServerManager::api_wifi_scan_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "WiFi scan requested");
+    
+    // Check if WiFi is initialized
+    wifi_mode_t mode;
+    esp_err_t err = esp_wifi_get_mode(&mode);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get WiFi mode: %s", esp_err_to_name(err));
+        send_json_response(req, "{\"networks\":[],\"error\":\"WiFi not initialized\"}");
+        return ESP_OK;
+    }
+    
+    ESP_LOGI(TAG, "WiFi mode before scan: %d (AP=2, STA=1, APSTA=3)", mode);
+    
+    // Ensure WiFi is in STA or APSTA mode for scanning
+    if (mode == WIFI_MODE_AP) {
+        // Create STA interface if it doesn't exist
+        esp_netif_t* sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (sta_netif == NULL) {
+            ESP_LOGI(TAG, "Creating STA network interface for scanning");
+            sta_netif = esp_netif_create_default_wifi_sta();
+        }
+        
+        // Switch to APSTA mode temporarily to allow scanning
+        ESP_LOGI(TAG, "Switching from AP to APSTA mode for scanning");
+        err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set APSTA mode: %s", esp_err_to_name(err));
+            send_json_response(req, "{\"networks\":[],\"error\":\"Failed to enable STA mode\"}");
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(500)); // Give it time to switch and initialize
+    }
+    
+    // Start WiFi scan
+    wifi_scan_config_t scan_config = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = {
+            .active = {
+                .min = 100,
+                .max = 300
+            },
+            .passive = 0
+        },
+        .home_chan_dwell_time = 0,
+        .channel_bitmap = {0},
+        .coex_background_scan = false
+    };
+    
+    err = esp_wifi_scan_start(&scan_config, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi scan failed: %s", esp_err_to_name(err));
+        char error_response[256];
+        snprintf(error_response, sizeof(error_response), 
+                 "{\"networks\":[],\"error\":\"Scan failed: %s\"}", 
+                 esp_err_to_name(err));
+        send_json_response(req, error_response);
+        return ESP_OK;
+    }
+    
+    // Get scan results
+    uint16_t ap_count = 0;
+    esp_wifi_scan_get_ap_num(&ap_count);
+    
+    ESP_LOGI(TAG, "WiFi scan found %d networks", ap_count);
+    
+    if (ap_count == 0) {
+        send_json_response(req, "{\"networks\":[]}");
+        return ESP_OK;
+    }
+    
+    // Limit to 20 networks to avoid memory issues
+    if (ap_count > 20) {
+        ap_count = 20;
+    }
+    
+    wifi_ap_record_t* ap_records = (wifi_ap_record_t*)malloc(sizeof(wifi_ap_record_t) * ap_count);
+    if (ap_records == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for scan results");
+        send_json_response(req, "{\"networks\":[]}");
+        return ESP_OK;
+    }
+    
+    esp_wifi_scan_get_ap_records(&ap_count, ap_records);
+    
+    // Build JSON response
+    DynamicJsonDocument doc(4096);
+    JsonArray networks = doc.createNestedArray("networks");
+    
+    for (int i = 0; i < ap_count; i++) {
+        JsonObject network = networks.createNestedObject();
+        network["ssid"] = (char*)ap_records[i].ssid;
+        network["rssi"] = ap_records[i].rssi;
+        network["channel"] = ap_records[i].primary;
+        network["encryption"] = ap_records[i].authmode;
+        network["security"] = (ap_records[i].authmode != WIFI_AUTH_OPEN);
+    }
+    
+    free(ap_records);
+    
+    char response[4096];
+    size_t len = serializeJson(doc, response, sizeof(response));
+    ESP_LOGI(TAG, "WiFi scan response length: %d bytes", len);
+    send_json_response(req, response);
+    
+    return ESP_OK;
+}
+
+// WiFi Connect Handler (POST /wifi_connect)
+esp_err_t ServerManager::api_wifi_connect_handler(httpd_req_t *req) {
+    char buf[256];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    char ssid[64] = {0};
+    char password[64] = {0};
+    
+    // Parse form data
+    if (strstr(buf, "ssid=")) {
+        char *ssid_start = strstr(buf, "ssid=") + 5;
+        char *ssid_end = strchr(ssid_start, '&');
+        int len = ssid_end ? (ssid_end - ssid_start) : strlen(ssid_start);
+        if (len > 0 && len < sizeof(ssid)) {
+            strncpy(ssid, ssid_start, len);
+            ssid[len] = '\0';
+            // URL decode if needed
+        }
+    }
+    
+    if (strstr(buf, "password=")) {
+        char *pwd_start = strstr(buf, "password=") + 9;
+        char *pwd_end = strchr(pwd_start, '&');
+        int len = pwd_end ? (pwd_end - pwd_start) : strlen(pwd_start);
+        if (len > 0 && len < sizeof(password)) {
+            strncpy(password, pwd_start, len);
+            password[len] = '\0';
+        }
+    }
+    
+    // Fallback to JSON
+    if (strlen(ssid) == 0) {
+        DynamicJsonDocument doc(512);
+        deserializeJson(doc, buf);
+        
+        const char* s = doc["ssid"];
+        const char* p = doc["password"];
+        
+        if (s) strncpy(ssid, s, sizeof(ssid) - 1);
+        if (p) strncpy(password, p, sizeof(password) - 1);
+    }
+    
+    if (strlen(ssid) > 0 && strlen(password) > 0) {
+        // Connect to WiFi via WiFiManager
+        wifi.beginSTA(ssid, password);
+        
+        // Return simple success message that HTML expects
+        httpd_resp_send(req, "Success", 7);
+        return ESP_OK;
+    }
+    
+    httpd_resp_send(req, "Error: Missing SSID or password", 32);
+    return ESP_FAIL;
+}
+
+// WiFi Disconnect Handler
+esp_err_t ServerManager::api_wifi_disconnect_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "WiFi disconnect requested");
+    // TODO: Disconnect WiFi via WiFiManager
+    // wifi.disconnect();
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+}
+
+// WiFi Clear Handler
+esp_err_t ServerManager::api_wifi_clear_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Clear WiFi credentials requested");
+    // TODO: Clear WiFi credentials from NVS
+    // wifi.clearCredentials();
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+}
+
+// Toggle AP Handler
+esp_err_t ServerManager::api_toggle_ap_handler(httpd_req_t *req) {
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    // Parse form data (enable=1 or enable=0)
+    char enable_str[8] = {0};
+    bool enable = false;
+    
+    if (strstr(buf, "enable=")) {
+        char *enable_start = strstr(buf, "enable=") + 7;
+        char *enable_end = strchr(enable_start, '&');
+        int len = enable_end ? (enable_end - enable_start) : strlen(enable_start);
+        if (len > 0 && len < sizeof(enable_str)) {
+            strncpy(enable_str, enable_start, len);
+            enable_str[len] = '\0';
+            enable = (strcmp(enable_str, "1") == 0);
+        }
+    } else {
+        // Try JSON format
+        DynamicJsonDocument doc(256);
+        deserializeJson(doc, buf);
+        enable = doc["enable"];
+    }
+    
+    ESP_LOGI(TAG, "Toggle AP: %s", enable ? "ON" : "OFF");
+    
+    // Save setting to NVS
+    Config::saveAPEnabled(enable);
+    
+    // Clear emergency mode flag when user manually changes AP setting
+    Config::AP_EMERGENCY_MODE = false;
+    
+    // Get current WiFi mode
+    wifi_mode_t current_mode;
+    esp_wifi_get_mode(&current_mode);
+    
+    if (enable) {
+        // Enable AP
+        if (current_mode == WIFI_MODE_STA) {
+            // Switch from STA to APSTA
+            ESP_LOGI(TAG, "Switching from STA to APSTA mode");
+            esp_wifi_set_mode(WIFI_MODE_APSTA);
+            wifi.beginAP();
+        } else if (current_mode == WIFI_MODE_NULL) {
+            // Start fresh AP
+            ESP_LOGI(TAG, "Starting AP mode");
+            wifi.beginAP();
+        }
+        // If already APSTA or AP, do nothing
+    } else {
+        // Disable AP
+        if (current_mode == WIFI_MODE_APSTA) {
+            // Switch from APSTA to STA only
+            ESP_LOGI(TAG, "Switching from APSTA to STA mode (AP disabled)");
+            wifi.stopAP();
+            esp_wifi_set_mode(WIFI_MODE_STA);
+        } else if (current_mode == WIFI_MODE_AP) {
+            // Can't disable AP if it's the only mode running
+            ESP_LOGW(TAG, "Cannot disable AP - it's the only network interface. Connect to WiFi first!");
+            httpd_resp_send(req, "ERROR: Connect to WiFi before disabling AP", 43);
+            return ESP_OK;
+        }
+    }
+    
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+}
+
+// MQTT Settings Handler
+esp_err_t ServerManager::api_mqtt_settings_handler(httpd_req_t *req) {
+    char buf[512];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    // Try to parse as form data first
+    char server[128] = {0};
+    char port_str[8] = {0};
+    char user[64] = {0};
+    char pass[64] = {0};
+    char topic[64] = {0};
+    
+    bool is_form_data = (strstr(buf, "server=") != NULL);
+    
+    if (is_form_data) {
+        // Parse form data
+        if (strstr(buf, "server=")) {
+            char *start = strstr(buf, "server=") + 7;
+            char *end = strchr(start, '&');
+            int len = end ? (end - start) : strlen(start);
+            if (len > 0 && len < sizeof(server)) {
+                strncpy(server, start, len);
+                server[len] = '\0';
+            }
+        }
+        
+        if (strstr(buf, "port=")) {
+            char *start = strstr(buf, "port=") + 5;
+            char *end = strchr(start, '&');
+            int len = end ? (end - start) : strlen(start);
+            if (len > 0 && len < sizeof(port_str)) {
+                strncpy(port_str, start, len);
+                port_str[len] = '\0';
+            }
+        }
+        
+        if (strstr(buf, "user=")) {
+            char *start = strstr(buf, "user=") + 5;
+            char *end = strchr(start, '&');
+            int len = end ? (end - start) : strlen(start);
+            if (len > 0 && len < sizeof(user)) {
+                strncpy(user, start, len);
+                user[len] = '\0';
+            }
+        }
+        
+        if (strstr(buf, "pass=")) {
+            char *start = strstr(buf, "pass=") + 5;
+            char *end = strchr(start, '&');
+            int len = end ? (end - start) : strlen(start);
+            if (len > 0 && len < sizeof(pass)) {
+                strncpy(pass, start, len);
+                pass[len] = '\0';
+            }
+        }
+    } else {
+        // Parse JSON
+        DynamicJsonDocument doc(512);
+        deserializeJson(doc, buf);
+        
+        const char* srv = doc["server"];
+        uint16_t prt = doc["port"];
+        const char* usr = doc["user"];
+        const char* pwd = doc["pass"];
+        const char* tpc = doc["topic"];
+        
+        if (srv) strncpy(server, srv, sizeof(server) - 1);
+        if (prt > 0) snprintf(port_str, sizeof(port_str), "%d", prt);
+        if (usr) strncpy(user, usr, sizeof(user) - 1);
+        if (pwd) strncpy(pass, pwd, sizeof(pass) - 1);
+        if (tpc) strncpy(topic, tpc, sizeof(topic) - 1);
+    }
+    
+    // Validate and save
+    if (strlen(server) > 0) {
+        uint16_t port = strlen(port_str) > 0 ? atoi(port_str) : 1883;
+        Config::saveMQTTSettings(server, port, user, pass, strlen(topic) > 0 ? topic : Config::MQTT_TOPIC);
+        
+        // TODO: Reconnect MQTT client with new settings
+        
+        httpd_resp_send(req, "OK", 2);
+        return ESP_OK;
+    }
+    
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+}
+
+// MQTT Test Handler
+esp_err_t ServerManager::api_mqtt_test_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "MQTT test connection requested");
+    
+    bool connected = mqttManager.isConnected();
     
     if (connected) {
-        testMqtt.disconnect();
-        server.send(200, "application/json", "{\"success\":true}");
+        send_json_response(req, "{\"success\":true,\"message\":\"MQTT connected\"}");
     } else {
-        String error = "Connection failed (Code: " + String(testMqtt.state()) + ")";
-        server.send(200, "application/json", "{\"success\":false,\"error\":\"" + error + "\"}");
-    }
-}
-
-void ServerManager::handleWiFiStatus() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
+        send_json_response(req, "{\"success\":false,\"error\":\"MQTT not connected\"}");
     }
     
-    String json = "{";
-    if (WiFi.status() == WL_CONNECTED) {
-        json += "\"connected\":true,";
-        json += "\"ssid\":\"" + WiFi.SSID() + "\",";
-        json += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
-        json += "\"mac\":\"" + WiFi.macAddress() + "\",";
-        json += "\"rssi\":" + String(WiFi.RSSI()) + ",";
-        json += "\"status\":\"Connected (RSSI: " + String(WiFi.RSSI()) + "dBm)\"";
-    } else {
-        json += "\"connected\":false,";
-        json += "\"ssid\":\"-\",";
-        json += "\"ip\":\"-\",";
-        json += "\"mac\":\"" + WiFi.macAddress() + "\",";
-        json += "\"rssi\":-100,";
-        json += "\"status\":\"Not connected\"";
-    }
-    json += "}";
-    
-    server.send(200, "application/json", json);
-}
-
-void ServerManager::handleWiFiScan() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    int n = WiFi.scanNetworks();
-    String json = "{\"networks\":[";
-    
-    for (int i = 0; i < n; ++i) {
-        if (i > 0) json += ",";
-        json += "{";
-        json += "\"ssid\":\"" + WiFi.SSID(i) + "\",";
-        json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
-        json += "\"channel\":" + String(WiFi.channel(i)) + ",";
-        json += "\"encryption\":" + String(WiFi.encryptionType(i)) + ",";
-        json += "\"selected\":" + String(WiFi.SSID(i) == WiFi.SSID() ? "true" : "false");
-        json += "}";
-    }
-    
-    json += "]}";
-    server.send(200, "application/json", json);
-}
-
-void ServerManager::handleWiFiDisconnect() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    WiFi.disconnect();
-    server.send(200, "text/plain", "OK");
-}
-
-void ServerManager::handleWiFiClear() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    // Disconnect from WiFi
-    WiFi.disconnect();
-    
-    // Clear saved WiFi credentials from preferences
-    Preferences prefs;
-    if (prefs.begin("wifi", false)) {
-        prefs.clear();
-        prefs.end();
-        Serial.println("WiFi credentials cleared from preferences");
-        server.send(200, "text/plain", "OK");
-    } else {
-        Serial.println("Error: Failed to clear WiFi preferences");
-        server.send(500, "text/plain", "Failed to clear credentials");
-    }
-}
-
-void ServerManager::handleMQTTStatus() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    String json = "{";
-    if (mqttManager.isConnected()) {
-        json += "\"connected\":true,";
-        json += "\"status\":\"Connected to " + String(Config::MQTT_SERVER) + "\"";
-    } else {
-        json += "\"connected\":false,";
-        if (strlen(Config::MQTT_SERVER) == 0) {
-            json += "\"status\":\"No MQTT server configured\"";
-        } else {
-            json += "\"status\":\"Not connected to " + String(Config::MQTT_SERVER) + "\"";
-        }
-    }
-    json += "}";
-    
-    server.send(200, "application/json", json);
-}
-
-void ServerManager::handleLEDToggle() {
-    if (!isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    // Check if state parameter is provided
-    if (server.hasArg("state")) {
-        String state = server.arg("state");
-        ledState = (state == "1");
-    } else {
-        // If no state parameter, toggle current state
-        ledState = !ledState;
-    }
-    
-    if (ledState) {
-        led.setColor(CRGB::White);  // LED an (weiß)
-    } else {
-        led.setColor(CRGB::Black); // LED aus
-    }
-    
-    server.send(200, "text/plain", "OK");
-}
-
-void ServerManager::handleStatus() {
-    unsigned long uptimeSeconds = millis() / 1000;
-    unsigned long days = uptimeSeconds / 86400;
-    unsigned long hours = (uptimeSeconds % 86400) / 3600;
-    unsigned long minutes = (uptimeSeconds % 3600) / 60;
-    unsigned long seconds = uptimeSeconds % 60;
-    
-    String uptimeStr = "";
-    if (days > 0) {
-        uptimeStr += String(days) + "d ";
-    }
-    if (hours > 0 || days > 0) {
-        uptimeStr += String(hours) + "h ";
-    }
-    if (minutes > 0 || hours > 0 || days > 0) {
-        uptimeStr += String(minutes) + "m ";
-    }
-    uptimeStr += String(seconds) + "s";
-    
-    String status = "{";
-    status += "\"uptime\":\"" + uptimeStr + "\",";
-    status += "\"free_memory\":" + String(ESP.getFreeHeap() / 1024) + ","; // in KB
-    status += "\"wifi_connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false") + ",";
-    status += "\"wifi_ip\":\"" + WiFi.localIP().toString() + "\",";
-    status += "\"wifi_rssi\":" + String(WiFi.RSSI()) + ",";
-    status += "\"mqtt_connected\":" + String(mqttManager.isConnected() ? "true" : "false") + ",";
-    status += "\"led_state\":" + String(ledState ? "true" : "false");
-    status += "}";
-    server.send(200, "application/json", status);
-}
-
-void ServerManager::handleGetSettings() {
-    String settings = "{";
-    settings += "\"device_name\":\"" + String(Config::DEVICE_NAME) + "\",";
-    settings += "\"mqtt_server\":\"" + String(Config::MQTT_SERVER) + "\",";
-    settings += "\"mqtt_port\":" + String(Config::MQTT_PORT) + ",";
-    settings += "\"mqtt_user\":\"" + String(Config::MQTT_USER) + "\",";
-    // Mask password for security - show asterisks if password exists
-    String maskedPassword = "";
-    if (strlen(Config::MQTT_PASS) > 0) {
-        for (int i = 0; i < strlen(Config::MQTT_PASS); i++) {
-            maskedPassword += "*";
-        }
-    }
-    settings += "\"mqtt_pass\":\"" + maskedPassword + "\",";
-    settings += "\"ap_enabled\":" + String(Config::AP_ENABLED ? "true" : "false") + ",";
-    settings += "\"temp_unit\":\"" + String(Config::TEMP_UNIT) + "\",";
-    settings += "\"last_password_change\":\"" + Config::getLastPasswordChange() + "\",";
-    settings += "\"firmware_version\":\"" + String(Config::FIRMWARE_VERSION) + "\",";
-    settings += "\"mqtt_connected\":" + String(mqttManager.isConnected() ? "true" : "false") + ",";
-    settings += "\"led_state\":" + String(ledState ? "true" : "false");
-    settings += "}";
-    server.send(200, "application/json", settings);
-}
-
-void ServerManager::handleFirmwareUpdate() {
-    // Check authentication - for uploads, we need to check if token exists in args
-    bool authenticated = false;
-    if (server.hasArg("token")) {
-        authenticated = (server.arg("token") == sessionToken);
-    }
-    
-    if (!authenticated) {
-        Serial.println("Firmware update: Authentication failed");
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    Serial.println("Firmware update request received (authenticated)");
-    
-    HTTPUpload& upload = server.upload();
-    
-    static bool updateStarted = false;
-    static size_t totalBytes = 0;
-    
-    if (upload.status == UPLOAD_FILE_START) {
-        updateStarted = false;
-        totalBytes = 0;
-        
-        Serial.printf("Firmware update started: %s\n", upload.filename.c_str());
-        
-        // Validate file extension
-        if (!upload.filename.endsWith(".bin")) {
-            Serial.println("Invalid file extension");
-            return;
-        }
-        
-        Serial.println("Starting OTA update...");
-        
-        // Start OTA update with maximum possible size
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-            Update.printError(Serial);
-            Serial.println("OTA update begin failed");
-            return;
-        }
-        
-        updateStarted = true;
-        Serial.println("OTA update started successfully");
-        
-    } else if (upload.status == UPLOAD_FILE_WRITE && updateStarted) {
-        // Write firmware data
-        size_t written = Update.write(upload.buf, upload.currentSize);
-        if (written != upload.currentSize) {
-            Update.printError(Serial);
-            Serial.printf("OTA write failed: expected %u, written %u\n", upload.currentSize, written);
-            updateStarted = false;
-            return;
-        }
-        
-        totalBytes += upload.currentSize;
-        Serial.printf("Written: %u bytes (total: %u)\n", upload.currentSize, totalBytes);
-        
-    } else if (upload.status == UPLOAD_FILE_END) {
-        if (updateStarted && Update.end(true)) {
-            Serial.printf("Firmware update successful: %u bytes\n", totalBytes);
-            server.send(200, "text/plain", "OK");
-            
-            Serial.println("Restarting device in 2 seconds...");
-            delay(2000);
-            ESP.restart();
-        } else {
-            if (updateStarted) {
-                Update.printError(Serial);
-                Serial.println("OTA update end failed");
-            }
-            server.send(500, "text/plain", "Update failed");
-        }
-        updateStarted = false;
-        
-    } else if (upload.status == UPLOAD_FILE_ABORTED) {
-        if (updateStarted) {
-            Update.end();
-            Serial.println("Firmware update aborted");
-            updateStarted = false;
-        }
-    }
-}
-
-// PWM Control Handler
-void ServerManager::handleSystemInfo() {
-    if (!isAuthenticated()) {
-        server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
-        return;
-    }
-    
-    // Erstelle JSON mit System-Informationen für Platzhalter
-    String json = "{";
-    json += "\"device_name\":\"" + String(Config::DEVICE_NAME) + "\",";
-    json += "\"wifi_ssid\":\"" + WiFi.SSID() + "\",";
-    json += "\"wifi_ip\":\"" + WiFi.localIP().toString() + "\",";
-    json += "\"wifi_mac\":\"" + WiFi.macAddress() + "\",";
-    json += "\"wifi_rssi\":\"" + String(WiFi.RSSI()) + "\"";
-    json += "}";
-    
-    Serial.println("DEBUG: System info JSON: " + json);
-    server.send(200, "application/json", json);
-}
-
-void ServerManager::handlePWMControl() {
-    Serial.println("DEBUG: PWM Control Handler called");
-    
-    if (!isAuthenticated()) {
-        Serial.println("DEBUG: PWM Control - Authentication failed");
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    Serial.println("DEBUG: PWM Control - Authentication successful");
-    
-    if (server.hasArg("duty")) {
-        int duty = server.arg("duty").toInt();
-        
-        Serial.printf("DEBUG: PWM Control - Received duty=%d\n", duty);
-        
-        // Validate duty cycle (0-255)
-        if (duty < 0 || duty > 255) {
-            Serial.printf("DEBUG: PWM Control - Invalid duty cycle: %d\n", duty);
-            server.send(400, "text/plain", "Invalid duty cycle");
-            return;
-        }
-        
-        Serial.printf("DEBUG: PWM Control - Setting PWM Pin 22 to duty %d\n", duty);
-        
-        // PWM-Wert über zentrale Funktion setzen
-        setPWMDuty(duty);
-        
-        Serial.println("DEBUG: PWM Control - Sending OK response");
-        server.send(200, "text/plain", "OK");
-    } else {
-        Serial.println("DEBUG: PWM Control - Missing parameters");
-        Serial.printf("DEBUG: PWM Control - Args count: %d\n", server.args());
-        for (int i = 0; i < server.args(); i++) {
-            Serial.printf("DEBUG: PWM Control - Arg %d: %s = %s\n", i, server.argName(i).c_str(), server.arg(i).c_str());
-        }
-        server.send(400, "text/plain", "Missing parameters");
-    }
-}
-
-// PWM Status Handler
-void ServerManager::handlePWMStatus() {
-    Serial.println("DEBUG: PWM Status Handler called");
-    
-    if (!isAuthenticated()) {
-        Serial.println("DEBUG: PWM Status - Authentication failed");
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    Serial.println("DEBUG: PWM Status - Authentication successful");
-    Serial.println("DEBUG: PWM Status - Building JSON response");
-    
-    int currentDuty = ledcRead(0);
-    float dutyCyclePercent = (currentDuty / 255.0) * 100.0;
-    
-    String json = "{";
-    json += "\"pwm_pin\": 22,";
-    json += "\"duty_raw\": " + String(currentDuty) + ",";
-    json += "\"duty_percent\": " + String(dutyCyclePercent, 1) + ",";
-    json += "\"manual_mode\": " + String(Config::MANUAL_PWM_MODE ? "true" : "false") + ",";
-    json += "\"manual_freq\": " + String(Config::MANUAL_PWM_FREQ) + ",";
-    json += "\"manual_duty\": " + String(Config::MANUAL_PWM_DUTY);
-    json += "}";
-    
-    Serial.printf("DEBUG: PWM Status - Pin 22, Duty %d (%.1f%%), Mode: %s\n", 
-                  currentDuty, dutyCyclePercent, Config::MANUAL_PWM_MODE ? "Manual" : "Auto");
-    Serial.printf("DEBUG: PWM Status - JSON: %s\n", json.c_str());
-    server.send(200, "application/json", json);
-}
-
-// KMeter Status Handler
-void ServerManager::handleKMeterStatus() {
-    Serial.println("DEBUG: KMeter Status Handler called");
-    
-    if (!isAuthenticated()) {
-        Serial.println("DEBUG: KMeter Status - Authentication failed");
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    Serial.println("DEBUG: KMeter Status - Authentication successful");
-    
-    // Update sensor vor dem Lesen
-    kmeterManager.update();
-    
-    String json = "{";
-    json += "\"initialized\": " + String(kmeterManager.isInitialized() ? "true" : "false") + ",";
-    json += "\"ready\": " + String(kmeterManager.isReady() ? "true" : "false") + ",";
-    json += "\"temperature_celsius\": " + String(kmeterManager.getTemperatureCelsius(), 2) + ",";
-    json += "\"temperature_fahrenheit\": " + String(kmeterManager.getTemperatureFahrenheit(), 2) + ",";
-    json += "\"internal_temperature\": " + String(kmeterManager.getInternalTemperature(), 2) + ",";
-    json += "\"error_status\": " + String(kmeterManager.getErrorStatus()) + ",";
-    json += "\"status_string\": \"" + kmeterManager.getStatusString() + "\",";
-    json += "\"i2c_address\": \"0x" + String(kmeterManager.getI2CAddress(), HEX) + "\",";
-    json += "\"read_interval\": " + String(kmeterManager.getReadInterval());
-    json += "}";
-    
-    Serial.printf("DEBUG: KMeter Status - JSON: %s\n", json.c_str());
-    server.send(200, "application/json", json);
-}
-
-// KMeter Configuration Handler
-void ServerManager::handleKMeterConfig() {
-    Serial.println("DEBUG: KMeter Config Handler called");
-    
-    if (!isAuthenticated()) {
-        Serial.println("DEBUG: KMeter Config - Authentication failed");
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    Serial.println("DEBUG: KMeter Config - Authentication successful");
-    
-    if (server.hasArg("read_interval")) {
-        unsigned long interval = server.arg("read_interval").toInt();
-        if (interval >= 5000 && interval <= 300000) { // 5s bis 5min
-            kmeterManager.setReadInterval(interval);
-            Serial.printf("KMeter read interval set to %lu ms\n", interval);
-            server.send(200, "text/plain", "OK");
-        } else {
-            server.send(400, "text/plain", "Invalid interval (5s-5min)");
-        }
-    } else if (server.hasArg("i2c_address")) {
-        String addrStr = server.arg("i2c_address");
-        uint8_t addr = (uint8_t)strtol(addrStr.c_str(), NULL, 16);
-        
-        if (addr >= 0x08 && addr <= 0x77) { // Gültige I2C-Adressen
-            if (kmeterManager.setI2CAddress(addr)) {
-                server.send(200, "text/plain", "OK");
-            } else {
-                server.send(500, "text/plain", "Failed to change I2C address");
-            }
-        } else {
-            server.send(400, "text/plain", "Invalid I2C address");
-        }
-    } else {
-        server.send(400, "text/plain", "Missing parameters");
-    }
-}
-
-// Temperature Mapping Handler
-void ServerManager::handleTempMapping() {
-    Serial.println("DEBUG: Temperature Mapping Handler called");
-    
-    if (!isAuthenticated()) {
-        Serial.println("DEBUG: Temperature Mapping - Authentication failed");
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    Serial.println("DEBUG: Temperature Mapping - Authentication successful");
-    
-    if (server.hasArg("startTemp") && server.hasArg("maxTemp")) {
-        float startTemp = server.arg("startTemp").toFloat();
-        float maxTemp = server.arg("maxTemp").toFloat();
-        
-        Serial.printf("DEBUG: Temperature Mapping - Received startTemp=%.1f, maxTemp=%.1f\n", startTemp, maxTemp);
-        
-        // Validate temperature values
-        if (startTemp < 0 || startTemp > 70 || maxTemp < 0 || maxTemp > 70) {
-            Serial.println("DEBUG: Temperature Mapping - Invalid temperature range");
-            server.send(400, "text/plain", "Invalid temperature range");
-            return;
-        }
-        
-        if (startTemp >= maxTemp) {
-            Serial.println("DEBUG: Temperature Mapping - Start temperature must be lower than max temperature");
-            server.send(400, "text/plain", "Start temperature must be lower than max temperature");
-            return;
-        }
-        
-        // Save settings
-        Config::saveTempMapping(startTemp, maxTemp);
-        
-        Serial.printf("DEBUG: Temperature Mapping - Saved startTemp=%.1f°C, maxTemp=%.1f°C\n", startTemp, maxTemp);
-        server.send(200, "text/plain", "OK");
-    } else {
-        Serial.println("DEBUG: Temperature Mapping - Missing parameters");
-        server.send(400, "text/plain", "Missing parameters");
-    }
-}
-
-// Temperature Mapping Status Handler
-void ServerManager::handleTempMappingStatus() {
-    Serial.println("DEBUG: Temperature Mapping Status Handler called");
-    
-    if (!isAuthenticated()) {
-        Serial.println("DEBUG: Temperature Mapping Status - Authentication failed");
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    Serial.println("DEBUG: Temperature Mapping Status - Authentication successful");
-    
-    String json = "{";
-    json += "\"startTemp\": " + String(Config::TEMP_START, 1) + ",";
-    json += "\"maxTemp\": " + String(Config::TEMP_MAX, 1) + ",";
-    json += "\"autoEnabled\": " + String(Config::AUTO_PWM_ENABLED ? "true" : "false");
-    json += "}";
-    
-    Serial.printf("DEBUG: Temperature Mapping Status - JSON: %s\n", json.c_str());
-    server.send(200, "application/json", json);
-}
-
-// Auto PWM Handler
-void ServerManager::handleAutoPWM() {
-    Serial.println("DEBUG: Auto PWM Handler called");
-    
-    if (!isAuthenticated()) {
-        Serial.println("DEBUG: Auto PWM - Authentication failed");
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    
-    Serial.println("DEBUG: Auto PWM - Authentication successful");
-    
-    if (server.hasArg("enabled")) {
-        bool enabled = server.arg("enabled").toInt() == 1;
-        
-        Serial.printf("DEBUG: Auto PWM - Setting enabled=%s\n", enabled ? "true" : "false");
-        
-        // Save setting
-        Config::saveAutoPWMEnabled(enabled);
-        
-        if (enabled) {
-            // If auto PWM is enabled, immediately update PWM based on current temperature
-            updateAutoPWM();
-        }
-        
-        Serial.printf("DEBUG: Auto PWM - Saved enabled=%s\n", enabled ? "true" : "false");
-        server.send(200, "text/plain", "OK");
-    } else {
-        Serial.println("DEBUG: Auto PWM - Missing parameters");
-        server.send(400, "text/plain", "Missing parameters");
-    }
+    return ESP_OK;
 }
 
 // Manual PWM Mode Handler
-void ServerManager::handleManualPWMMode() {
-    Serial.println("DEBUG: Manual PWM Mode Handler called");
-    
-    if (!isAuthenticated()) {
-        Serial.println("DEBUG: Manual PWM Mode - Authentication failed");
-        server.send(401, "text/plain", "Unauthorized");
-        return;
+esp_err_t ServerManager::api_manual_pwm_mode_handler(httpd_req_t *req) {
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
     }
+    buf[ret] = '\0';
     
-    Serial.println("DEBUG: Manual PWM Mode - Authentication successful");
+    bool enabled = false;
     
-    if (server.hasArg("mode")) {
-        bool manualMode = server.arg("mode") == "manual";
-        
-        Serial.printf("DEBUG: Manual PWM Mode - Setting mode=%s\n", manualMode ? "manual" : "auto");
-        
-        // Save setting
-        Config::saveManualPWMMode(manualMode);
-        
-        // If switching to auto mode, trigger auto PWM update
-        if (!manualMode) {
-            Config::saveAutoPWMEnabled(true);
-            updateAutoPWM();
+    // Parse form data (mode=manual or mode=auto)
+    if (strstr(buf, "mode=")) {
+        char *mode_start = strstr(buf, "mode=") + 5;
+        char *mode_end = strchr(mode_start, '&');
+        char mode[16] = {0};
+        int len = mode_end ? (mode_end - mode_start) : strlen(mode_start);
+        if (len > 0 && len < sizeof(mode)) {
+            strncpy(mode, mode_start, len);
+            mode[len] = '\0';
+            enabled = (strcmp(mode, "manual") == 0);
         }
-        
-        Serial.printf("DEBUG: Manual PWM Mode - Saved mode=%s\n", manualMode ? "manual" : "auto");
-        server.send(200, "text/plain", "OK");
     } else {
-        Serial.println("DEBUG: Manual PWM Mode - Missing parameters");
-        server.send(400, "text/plain", "Missing parameters");
+        // Try JSON format
+        DynamicJsonDocument doc(256);
+        deserializeJson(doc, buf);
+        enabled = doc["enabled"];
     }
+    
+    Config::saveManualPWMMode(enabled);
+    
+    ESP_LOGI(TAG, "Manual PWM mode: %s", enabled ? "ON" : "OFF");
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
 }
 
 // Manual PWM Settings Handler
-void ServerManager::handleManualPWMSettings() {
-    Serial.println("DEBUG: Manual PWM Settings Handler called");
+esp_err_t ServerManager::api_manual_pwm_settings_handler(httpd_req_t *req) {
+    char buf[256];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
     
-    if (!isAuthenticated()) {
-        Serial.println("DEBUG: Manual PWM Settings - Authentication failed");
-        server.send(401, "text/plain", "Unauthorized");
-        return;
+    ServerManager* serverInstance = (ServerManager*)req->user_ctx;
+    
+    uint32_t freq = 0;
+    uint8_t duty = 0;
+    
+    // Parse form data
+    if (strstr(buf, "frequency=")) {
+        char *freq_start = strstr(buf, "frequency=") + 10;
+        char *freq_end = strchr(freq_start, '&');
+        char freq_str[16] = {0};
+        int len = freq_end ? (freq_end - freq_start) : strlen(freq_start);
+        if (len > 0 && len < sizeof(freq_str)) {
+            strncpy(freq_str, freq_start, len);
+            freq_str[len] = '\0';
+            freq = atoi(freq_str);
+        }
     }
     
-    Serial.println("DEBUG: Manual PWM Settings - Authentication successful");
+    if (strstr(buf, "duty=")) {
+        char *duty_start = strstr(buf, "duty=") + 5;
+        char *duty_end = strchr(duty_start, '&');
+        char duty_str[16] = {0};
+        int len = duty_end ? (duty_end - duty_start) : strlen(duty_start);
+        if (len > 0 && len < sizeof(duty_str)) {
+            strncpy(duty_str, duty_start, len);
+            duty_str[len] = '\0';
+            duty = atoi(duty_str);
+        }
+    }
     
-    if (server.hasArg("frequency") && server.hasArg("duty")) {
-        uint32_t frequency = server.arg("frequency").toInt();
-        uint8_t dutyCycle = server.arg("duty").toInt();
+    // Fallback to JSON if form parsing failed
+    if (freq == 0 && duty == 0) {
+        DynamicJsonDocument doc(512);
+        deserializeJson(doc, buf);
         
-        // Validate inputs
-        if (frequency < 100 || frequency > 40000) {
-            Serial.println("ERROR: Invalid frequency (100-40000 Hz)");
-            server.send(400, "text/plain", "Invalid frequency (100-40000 Hz)");
-            return;
+        if (doc.containsKey("frequency")) {
+            freq = doc["frequency"];
         }
         
-        if (dutyCycle > 100) {
-            Serial.println("ERROR: Invalid duty cycle (0-100%)");
-            server.send(400, "text/plain", "Invalid duty cycle (0-100%)");
-            return;
+        if (doc.containsKey("dutyCycle")) {
+            duty = doc["dutyCycle"];
+        } else if (doc.containsKey("duty")) {
+            duty = doc["duty"];
         }
+    }
+    
+    // Apply settings
+    if (freq > 0) {
+        serverInstance->reconfigurePWM(freq);
+    }
+    
+    if (duty <= 100) {
+        int duty_8bit = (duty * 255) / 100;
+        serverInstance->setPWMDuty(duty_8bit);
+        Config::saveManualPWMSettings(freq > 0 ? freq : Config::MANUAL_PWM_FREQ, duty);
+    }
+    
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+}
+
+// Temperature Mapping Handler
+esp_err_t ServerManager::api_temp_mapping_handler(httpd_req_t *req) {
+    char buf[256];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    float tempStart = 0;
+    float tempMax = 0;
+    
+    // Parse form data
+    if (strstr(buf, "startTemp=")) {
+        char *start_pos = strstr(buf, "startTemp=") + 10;
+        char *end_pos = strchr(start_pos, '&');
+        char temp_str[16] = {0};
+        int len = end_pos ? (end_pos - start_pos) : strlen(start_pos);
+        if (len > 0 && len < sizeof(temp_str)) {
+            strncpy(temp_str, start_pos, len);
+            temp_str[len] = '\0';
+            tempStart = atof(temp_str);
+        }
+    }
+    
+    if (strstr(buf, "maxTemp=")) {
+        char *start_pos = strstr(buf, "maxTemp=") + 8;
+        char *end_pos = strchr(start_pos, '&');
+        char temp_str[16] = {0};
+        int len = end_pos ? (end_pos - start_pos) : strlen(start_pos);
+        if (len > 0 && len < sizeof(temp_str)) {
+            strncpy(temp_str, start_pos, len);
+            temp_str[len] = '\0';
+            tempMax = atof(temp_str);
+        }
+    }
+    
+    // Fallback to JSON
+    if (tempStart == 0 && tempMax == 0) {
+        DynamicJsonDocument doc(512);
+        deserializeJson(doc, buf);
         
-        Serial.printf("DEBUG: Manual PWM Settings - Freq=%u Hz, Duty=%u%%\n", frequency, dutyCycle);
-        
-        // Save settings
-        Config::saveManualPWMSettings(frequency, dutyCycle);
-        
-        // Apply frequency change
-        reconfigurePWM(frequency);
-        
-        // Apply duty cycle (convert % to 0-255)
-        int duty255 = map(dutyCycle, 0, 100, 0, 255);
-        setPWMDuty(duty255);
-        
-        Serial.printf("DEBUG: Manual PWM Settings - Applied Freq=%u Hz, Duty=%u%% (raw=%d)\n", 
-                      frequency, dutyCycle, duty255);
-        server.send(200, "text/plain", "OK");
+        tempStart = doc["tempStart"];
+        tempMax = doc["tempMax"];
+    }
+    
+    if (tempStart > 0 && tempMax > tempStart) {
+        Config::saveTempMapping(tempStart, tempMax);
+        httpd_resp_send(req, "OK", 2);
+        return ESP_OK;
+    }
+    
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+}
+
+// Temperature Mapping Status Handler
+esp_err_t ServerManager::api_temp_mapping_status_handler(httpd_req_t *req) {
+    DynamicJsonDocument doc(384);
+    doc["tempStart"] = Config::TEMP_START;
+    doc["startTemp"] = Config::TEMP_START; // Alias
+    doc["tempMax"] = Config::TEMP_MAX;
+    doc["maxTemp"] = Config::TEMP_MAX; // Alias
+    doc["autoPWMEnabled"] = Config::AUTO_PWM_ENABLED;
+    doc["auto_pwm"] = Config::AUTO_PWM_ENABLED; // Alias
+    
+    char response[384];
+    serializeJson(doc, response, sizeof(response));
+    send_json_response(req, response);
+    return ESP_OK;
+}
+
+// KMeter Status Handler
+esp_err_t ServerManager::api_kmeter_status_handler(httpd_req_t *req) {
+    ServerManager* serverInstance = (ServerManager*)req->user_ctx;
+    
+    DynamicJsonDocument doc(768);
+    
+    // Get KMeter data
+    bool isReady = serverInstance->getKMeterManager()->isReady();
+    float tempC = serverInstance->getKMeterManager()->getTemperatureCelsius();
+    float tempF = serverInstance->getKMeterManager()->getTemperatureFahrenheit();
+    float internalTemp = serverInstance->getKMeterManager()->getInternalTemperature();
+    
+    doc["connected"] = true; // TODO: Check actual connection
+    doc["initialized"] = true; // Assume initialized if we got here
+    doc["ready"] = isReady;
+    doc["temperature"] = tempC; // Legacy field
+    doc["temperature_celsius"] = tempC;
+    doc["temperatureF"] = tempF;
+    doc["temperature_fahrenheit"] = tempF;
+    doc["internal_temperature"] = internalTemp;
+    doc["unit"] = Config::TEMP_UNIT;
+    
+    // Status string
+    if (isReady) {
+        doc["status_string"] = "Bereit";
     } else {
-        Serial.println("DEBUG: Manual PWM Settings - Missing parameters");
-        server.send(400, "text/plain", "Missing parameters");
+        doc["status_string"] = "Nicht bereit";
     }
+    
+    // I2C configuration
+    doc["i2c_address"] = "0x66";
+    doc["read_interval"] = 1000; // Default 1 second
+    
+    char response[768];
+    serializeJson(doc, response, sizeof(response));
+    send_json_response(req, response);
+    return ESP_OK;
 }
 
-// Map temperature to PWM duty cycle (1-255)
-int ServerManager::mapTemperatureToPWM(float temperature) {
-    // If temperature is below start temperature, return 0 (off)
-    if (temperature <= Config::TEMP_START) {
-        return 0;
+// KMeter Config Handler
+esp_err_t ServerManager::api_kmeter_config_handler(httpd_req_t *req) {
+    char buf[256];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    // Parse form data
+    if (strstr(buf, "unit=")) {
+        char *unit_start = strstr(buf, "unit=") + 5;
+        char *unit_end = strchr(unit_start, '&');
+        char unit[8] = {0};
+        int len = unit_end ? (unit_end - unit_start) : strlen(unit_start);
+        if (len > 0 && len < sizeof(unit)) {
+            strncpy(unit, unit_start, len);
+            unit[len] = '\0';
+            Config::saveTempUnit(unit);
+            httpd_resp_send(req, "OK", 2);
+            return ESP_OK;
+        }
     }
     
-    // If temperature is above max temperature, return 255 (full power)
-    if (temperature >= Config::TEMP_MAX) {
-        return 255;
+    if (strstr(buf, "read_interval=")) {
+        char *interval_start = strstr(buf, "read_interval=") + 14;
+        char *interval_end = strchr(interval_start, '&');
+        char interval_str[16] = {0};
+        int len = interval_end ? (interval_end - interval_start) : strlen(interval_start);
+        if (len > 0 && len < sizeof(interval_str)) {
+            strncpy(interval_str, interval_start, len);
+            interval_str[len] = '\0';
+            // TODO: Save interval setting
+            httpd_resp_send(req, "OK", 2);
+            return ESP_OK;
+        }
     }
     
-    // Map temperature between start and max to PWM range 1-255
-    // Using Arduino map function: map(value, fromLow, fromHigh, toLow, toHigh)
-    int pwmValue = map((int)(temperature * 10), 
-                      (int)(Config::TEMP_START * 10), 
-                      (int)(Config::TEMP_MAX * 10), 
-                      25, 255);
+    if (strstr(buf, "i2c_address=")) {
+        char *addr_start = strstr(buf, "i2c_address=") + 12;
+        char *addr_end = strchr(addr_start, '&');
+        char addr_str[16] = {0};
+        int len = addr_end ? (addr_end - addr_start) : strlen(addr_start);
+        if (len > 0 && len < sizeof(addr_str)) {
+            strncpy(addr_str, addr_start, len);
+            addr_str[len] = '\0';
+            // TODO: Save I2C address and reinitialize sensor
+            httpd_resp_send(req, "OK", 2);
+            return ESP_OK;
+        }
+    }
     
-    return pwmValue;
+    // Fallback to JSON
+    DynamicJsonDocument doc(512);
+    deserializeJson(doc, buf);
+    
+    const char* unit = doc["unit"];
+    if (unit) {
+        Config::saveTempUnit(unit);
+        httpd_resp_send(req, "OK", 2);
+        return ESP_OK;
+    }
+    
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
 }
 
-// Update PWM based on current temperature (called from auto PWM mode)
-void ServerManager::updateAutoPWM() {
-    // Skip if in manual mode
-    if (Config::MANUAL_PWM_MODE) {
-        return; // Manual mode active
+// LED Toggle Handler
+esp_err_t ServerManager::api_led_toggle_handler(httpd_req_t *req) {
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        // If no body, just toggle
+        ESP_LOGI(TAG, "LED toggle (no body)");
+        // TODO: Toggle LED via LEDManager
+        httpd_resp_send(req, "OK", 2);
+        return ESP_OK;
+    }
+    buf[ret] = '\0';
+    
+    // Parse form data (state=1 or state=0)
+    char state[8] = {0};
+    if (strstr(buf, "state=")) {
+        char *state_start = strstr(buf, "state=") + 6;
+        char *state_end = strchr(state_start, '&');
+        int len = state_end ? (state_end - state_start) : strlen(state_start);
+        if (len > 0 && len < sizeof(state)) {
+            strncpy(state, state_start, len);
+            state[len] = '\0';
+            
+            bool enabled = (strcmp(state, "1") == 0);
+            ESP_LOGI(TAG, "LED: %s", enabled ? "ON" : "OFF");
+            // TODO: Set LED via LEDManager
+            httpd_resp_send(req, "OK", 2);
+            return ESP_OK;
+        }
     }
     
-    if (!Config::AUTO_PWM_ENABLED) {
-        return; // Auto PWM is disabled
+    // Try JSON format as fallback
+    DynamicJsonDocument doc(256);
+    deserializeJson(doc, buf);
+    
+    if (doc.containsKey("enabled")) {
+        bool enabled = doc["enabled"];
+        ESP_LOGI(TAG, "LED: %s", enabled ? "ON" : "OFF");
+        // TODO: Set LED via LEDManager
     }
     
-    if (!kmeterManager.isInitialized() || !kmeterManager.isReady()) {
-        Serial.println("WARNING: Auto PWM - KMeter sensor not ready");
-        return;
+    if (doc.containsKey("color")) {
+        const char* color = doc["color"];
+        ESP_LOGI(TAG, "LED color: %s", color);
+        // TODO: Set LED color via LEDManager
     }
     
-    float currentTemp = kmeterManager.getTemperatureCelsius();
-    int pwmValue = mapTemperatureToPWM(currentTemp);
-    
-    Serial.printf("Auto PWM: Temperature=%.1f°C -> PWM=%d\n", currentTemp, pwmValue);
-    
-    // Set PWM value
-    setPWMDuty(pwmValue);
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
 }
+
+// Change Password Handler
+esp_err_t ServerManager::api_change_password_handler(httpd_req_t *req) {
+    char buf[256];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    char currentPassword[64] = {0};
+    char newPassword[64] = {0};
+    
+    // Parse form data (current_password and new_password)
+    if (strstr(buf, "current_password=")) {
+        char *pwd_start = strstr(buf, "current_password=") + 17;
+        char *pwd_end = strchr(pwd_start, '&');
+        int len = pwd_end ? (pwd_end - pwd_start) : strlen(pwd_start);
+        if (len > 0 && len < sizeof(currentPassword)) {
+            strncpy(currentPassword, pwd_start, len);
+            currentPassword[len] = '\0';
+        }
+    }
+    
+    if (strstr(buf, "new_password=")) {
+        char *pwd_start = strstr(buf, "new_password=") + 13;
+        char *pwd_end = strchr(pwd_start, '&');
+        int len = pwd_end ? (pwd_end - pwd_start) : strlen(pwd_start);
+        if (len > 0 && len < sizeof(newPassword)) {
+            strncpy(newPassword, pwd_start, len);
+            newPassword[len] = '\0';
+        }
+    }
+    
+    // Fallback to JSON with camelCase
+    if (strlen(currentPassword) == 0 || strlen(newPassword) == 0) {
+        DynamicJsonDocument doc(512);
+        deserializeJson(doc, buf);
+        
+        const char* currPwd = doc["currentPassword"];
+        const char* newPwd = doc["newPassword"];
+        
+        if (currPwd) strncpy(currentPassword, currPwd, sizeof(currentPassword) - 1);
+        if (newPwd) strncpy(newPassword, newPwd, sizeof(newPassword) - 1);
+    }
+    
+    if (strlen(currentPassword) == 0 || strlen(newPassword) == 0) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    
+    // Verify current password
+    if (strcmp(currentPassword, Config::WEB_PASSWORD) != 0) {
+        httpd_resp_send(req, "INVALID", 7);
+        return ESP_OK;
+    }
+    
+    // Save new password
+    Config::saveWebPassword(newPassword);
+    
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+}
+
+// Logout Handler
+esp_err_t ServerManager::api_logout_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Logout - invalidating token");
+    
+    // Invalidate the current token
+    current_token[0] = '\0';
+    token_created = 0;
+    
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/login.html");
+    httpd_resp_send(req, NULL, 0);
+    
+    return ESP_OK;
+}
+
+
+

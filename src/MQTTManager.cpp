@@ -1,53 +1,132 @@
 #include "MQTTManager.h"
-#include "LEDManager.h"
-#include <WiFi.h>
+#include "esp_mac.h"
+#include "esp_timer.h"
+#include "WiFiManager.h"
+#include <stdio.h>
+#include <string.h>
 
-const String DEVICE_MODEL = "M5Stack Atom";
-const String DEVICE_MANUFACTURER = "SmartHome-Assistant.info";
+static const char *TAG = "MQTT";
+static const char* DEVICE_MODEL = "M5Stack Atom";
+static const char* DEVICE_MANUFACTURER = "SmartHome-Assistant.info";
 
 MQTTManager mqttManager;
+extern WiFiManager wifi;
 
 MQTTManager::MQTTManager() 
-    : mqttClient(wifiClient), lastReconnectAttempt(0), lastHeartbeat(0), autoDiscoveryPublished(false), ledCallback(nullptr) {
+    : mqtt_client(nullptr), lastReconnectAttempt(0), lastHeartbeat(0), 
+      autoDiscoveryPublished(false), connected(false), ledCallback(nullptr) {
+}
+
+void MQTTManager::mqtt_event_handler(void *handler_args, esp_event_base_t base, 
+                                     int32_t event_id, void *event_data) {
+    MQTTManager* manager = static_cast<MQTTManager*>(handler_args);
+    esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+    
+    switch ((esp_mqtt_event_id_t)event_id) {
+        case MQTT_EVENT_CONNECTED:
+            ESP_LOGI(TAG, "MQTT Connected");
+            manager->connected = true;
+            manager->subscribeToCommands();
+            manager->publishAutoDiscovery();
+            manager->publishDeviceState();
+            break;
+            
+        case MQTT_EVENT_DISCONNECTED:
+            ESP_LOGI(TAG, "MQTT Disconnected");
+            manager->connected = false;
+            manager->autoDiscoveryPublished = false;
+            break;
+            
+        case MQTT_EVENT_DATA: {
+            ESP_LOGI(TAG, "MQTT Data received - Topic: %.*s", event->topic_len, event->topic);
+            
+            // LED Control Handler
+            char topic[256];
+            char baseTopic[128];
+            manager->getHomeAssistantBaseTopic(baseTopic, sizeof(baseTopic));
+            snprintf(topic, sizeof(topic), "%s/led/set", baseTopic);
+            
+            if (strncmp(event->topic, topic, event->topic_len) == 0) {
+                if (manager->ledCallback) {
+                    bool state = (strncmp((char*)event->data, "ON", event->data_len) == 0);
+                    manager->ledCallback(state);
+                    
+                    // Publish state back
+                    char stateTopic[256];
+                    snprintf(stateTopic, sizeof(stateTopic), "%s/led/state", baseTopic);
+                    esp_mqtt_client_publish(manager->mqtt_client, stateTopic, 
+                                          state ? "ON" : "OFF", 0, 1, true);
+                }
+            }
+            break;
+        }
+            
+        case MQTT_EVENT_ERROR:
+            ESP_LOGE(TAG, "MQTT Error");
+            break;
+            
+        default:
+            break;
+    }
 }
 
 void MQTTManager::begin() {
     if (strlen(Config::MQTT_SERVER) == 0) {
-        Serial.println("MQTT: No server configured");
+        ESP_LOGI(TAG, "No MQTT server configured");
         return;
     }
     
-    mqttClient.setServer(Config::MQTT_SERVER, Config::MQTT_PORT);
-    mqttClient.setBufferSize(2048);
-    mqttClient.setCallback([this](char* topic, byte* payload, unsigned int length) {
-        this->handleIncomingMessage(topic, payload, length);
-    });
+    char uri[128];
+    snprintf(uri, sizeof(uri), "mqtt://%s:%d", Config::MQTT_SERVER, Config::MQTT_PORT);
     
-    Serial.println("MQTT: Initialized with server " + String(Config::MQTT_SERVER) + ":" + String(Config::MQTT_PORT));
+    char clientId[64];
+    char deviceId[32];
+    getDeviceId(deviceId, sizeof(deviceId));
+    snprintf(clientId, sizeof(clientId), "ESP32-%s", deviceId);
+    
+    char statusTopic[256];
+    char baseTopic[128];
+    getBaseTopic(baseTopic, sizeof(baseTopic));
+    snprintf(statusTopic, sizeof(statusTopic), "%s/status", baseTopic);
+    
+    esp_mqtt_client_config_t mqtt_cfg = {};
+    mqtt_cfg.broker.address.uri = uri;
+    mqtt_cfg.credentials.client_id = clientId;
+    
+    if (strlen(Config::MQTT_USER) > 0) {
+        mqtt_cfg.credentials.username = Config::MQTT_USER;
+        mqtt_cfg.credentials.authentication.password = Config::MQTT_PASS;
+    }
+    
+    mqtt_cfg.session.last_will.topic = statusTopic;
+    mqtt_cfg.session.last_will.msg = "offline";
+    mqtt_cfg.session.last_will.qos = 1;
+    mqtt_cfg.session.last_will.retain = true;
+    
+    mqtt_cfg.buffer.size = 2048;
+    
+    mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_register_event(mqtt_client, (esp_mqtt_event_id_t)ESP_EVENT_ANY_ID, 
+                                   mqtt_event_handler, this);
+    esp_mqtt_client_start(mqtt_client);
+    
+    ESP_LOGI(TAG, "Initialized with server %s:%d", Config::MQTT_SERVER, Config::MQTT_PORT);
 }
 
 void MQTTManager::loop() {
-    if (strlen(Config::MQTT_SERVER) == 0 || WiFi.status() != WL_CONNECTED) {
+    if (strlen(Config::MQTT_SERVER) == 0 || !wifi.isConnected()) {
         return;
     }
     
-    if (!mqttClient.connected()) {
-        unsigned long now = millis();
-        if (now - lastReconnectAttempt > 30000) {
+    int64_t now = esp_timer_get_time() / 1000000; // Convert to seconds
+    
+    if (!connected) {
+        if (now - lastReconnectAttempt > 30) {
             lastReconnectAttempt = now;
-            if (connect()) {
-                Serial.println("MQTT: Connected successfully");
-                subscribeToCommands();
-                publishAutoDiscovery();
-                publishDeviceState();
-                autoDiscoveryPublished = true;
-            }
+            // Reconnection is automatic via esp_mqtt_client
         }
     } else {
-        mqttClient.loop();
-        
-        unsigned long now = millis();
-        if (now - lastHeartbeat > 30000) {
+        if (now - lastHeartbeat > 30) {
             lastHeartbeat = now;
             publishDeviceState();
         }
@@ -55,15 +134,22 @@ void MQTTManager::loop() {
 }
 
 bool MQTTManager::isConnected() {
-    return mqttClient.connected();
+    return connected;
 }
 
 void MQTTManager::disconnect() {
-    if (mqttClient.connected()) {
-        String statusTopic = getBaseTopic() + "/status";
-        mqttClient.publish(statusTopic.c_str(), "offline", true);
-        mqttClient.disconnect();
+    if (connected && mqtt_client) {
+        char statusTopic[256];
+        char baseTopic[128];
+        getBaseTopic(baseTopic, sizeof(baseTopic));
+        snprintf(statusTopic, sizeof(statusTopic), "%s/status", baseTopic);
+        
+        esp_mqtt_client_publish(mqtt_client, statusTopic, "offline", 0, 1, true);
+        esp_mqtt_client_stop(mqtt_client);
+        esp_mqtt_client_destroy(mqtt_client);
+        mqtt_client = nullptr;
     }
+    connected = false;
     autoDiscoveryPublished = false;
 }
 
@@ -71,342 +157,183 @@ void MQTTManager::setLEDCallback(void (*callback)(bool state)) {
     ledCallback = callback;
 }
 
-bool MQTTManager::connect() {
-    String clientId = "ESP32-" + getDeviceId();
-    String statusTopic = getBaseTopic() + "/status";
-    
-    bool connected;
-    if (strlen(Config::MQTT_USER) > 0) {
-        connected = mqttClient.connect(clientId.c_str(), Config::MQTT_USER, Config::MQTT_PASS, 
-                                     statusTopic.c_str(), 1, true, "offline");
+void MQTTManager::getDeviceId(char* buf, size_t len) {
+    uint8_t mac[6];
+    esp_efuse_mac_get_default(mac);
+    snprintf(buf, len, "%02X%02X%02X", mac[3], mac[4], mac[5]);
+}
+
+void MQTTManager::getMacAddress(char* buf, size_t len) {
+    uint8_t mac[6];
+    esp_efuse_mac_get_default(mac);
+    snprintf(buf, len, "%02X:%02X:%02X:%02X:%02X:%02X", 
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+void MQTTManager::getBaseTopic(char* buf, size_t len) {
+    if (strlen(Config::MQTT_TOPIC) > 0) {
+        strncpy(buf, Config::MQTT_TOPIC, len);
     } else {
-        connected = mqttClient.connect(clientId.c_str(), statusTopic.c_str(), 1, true, "offline");
+        char deviceId[32];
+        getDeviceId(deviceId, sizeof(deviceId));
+        snprintf(buf, len, "esp32/%s", deviceId);
     }
+}
+
+void MQTTManager::getHomeAssistantBaseTopic(char* buf, size_t len) {
+    getBaseTopic(buf, len);
+}
+
+void MQTTManager::getDiscoveryTopic(const char* component, const char* objectId, 
+                                   char* buf, size_t len) {
+    char deviceId[32];
+    getDeviceId(deviceId, sizeof(deviceId));
+    snprintf(buf, len, "homeassistant/%s/%s_%s/config", component, deviceId, objectId);
+}
+
+void MQTTManager::subscribeToCommands() {
+    if (!mqtt_client || !connected) return;
     
-    if (connected) {
-        mqttClient.publish(statusTopic.c_str(), "online", true);
-        Serial.println("MQTT: Connected as " + clientId);
-    } else {
-        Serial.println("MQTT: Connection failed, rc=" + String(mqttClient.state()));
-    }
+    char topic[256];
+    char baseTopic[128];
+    getHomeAssistantBaseTopic(baseTopic, sizeof(baseTopic));
     
-    return connected;
+    // Subscribe to LED control
+    snprintf(topic, sizeof(topic), "%s/led/set", baseTopic);
+    esp_mqtt_client_subscribe(mqtt_client, topic, 1);
+    ESP_LOGI(TAG, "Subscribed to: %s", topic);
 }
 
 void MQTTManager::publishAutoDiscovery() {
-    if (!mqttClient.connected()) return;
+    if (!mqtt_client || !connected) return;
     
-    Serial.println("MQTT: Publishing Home Assistant Auto Discovery...");
-    
-    publishDeviceInfo();
+    ESP_LOGI(TAG, "Publishing Home Assistant Auto Discovery...");
     
     publishSwitchDiscovery();
     publishSensorDiscovery();
     publishButtonDiscovery();
     
-    Serial.println("MQTT: Auto Discovery published");
-}
-
-void MQTTManager::publishDeviceInfo() {
-    String deviceId = getDeviceId();
-    String baseTopic = getBaseTopic();
-    
-    DynamicJsonDocument device(1024);
-    device["identifiers"][0] = deviceId;
-    device["name"] = Config::DEVICE_NAME;
-    device["model"] = DEVICE_MODEL;
-    device["manufacturer"] = DEVICE_MANUFACTURER;
-    device["sw_version"] = Config::FIRMWARE_VERSION;
-    device["hw_version"] = "1.0";
-    device["configuration_url"] = "http://" + WiFi.localIP().toString();
-    
-    JsonObject connections = device.createNestedObject("connections");
-    JsonArray wifi = connections.createNestedArray("wifi");
-    wifi.add(getMacAddress());
+    autoDiscoveryPublished = true;
+    ESP_LOGI(TAG, "Auto Discovery published");
 }
 
 void MQTTManager::publishSwitchDiscovery() {
-    String deviceId = getDeviceId();
-    String baseTopic = getHomeAssistantBaseTopic();
+    char deviceId[32];
+    char baseTopic[128];
+    char discoveryTopic[256];
+    char macAddr[32];
+    char localIP[16];
     
-    DynamicJsonDocument ledSwitch(512);
-    ledSwitch["unique_id"] = deviceId + "_led";
-    ledSwitch["name"] = String(Config::DEVICE_NAME) + " LED";
-    ledSwitch["state_topic"] = baseTopic + "/led/state";
-    ledSwitch["command_topic"] = baseTopic + "/led/set";
-    ledSwitch["payload_on"] = "ON";
-    ledSwitch["payload_off"] = "OFF";
-    ledSwitch["optimistic"] = false;
-    ledSwitch["retain"] = true;
+    getDeviceId(deviceId, sizeof(deviceId));
+    getHomeAssistantBaseTopic(baseTopic, sizeof(baseTopic));
+    getDiscoveryTopic("switch", "led", discoveryTopic, sizeof(discoveryTopic));
+    getMacAddress(macAddr, sizeof(macAddr));
+    wifi.getLocalIP(localIP, sizeof(localIP));
     
-    JsonObject device = ledSwitch.createNestedObject("device");
+    DynamicJsonDocument doc(1024);
+    
+    char uniqueId[64];
+    snprintf(uniqueId, sizeof(uniqueId), "%s_led", deviceId);
+    doc["unique_id"] = uniqueId;
+    
+    char name[128];
+    snprintf(name, sizeof(name), "%s LED", Config::DEVICE_NAME);
+    doc["name"] = name;
+    
+    char stateTopic[256];
+    snprintf(stateTopic, sizeof(stateTopic), "%s/led/state", baseTopic);
+    doc["state_topic"] = stateTopic;
+    
+    char commandTopic[256];
+    snprintf(commandTopic, sizeof(commandTopic), "%s/led/set", baseTopic);
+    doc["command_topic"] = commandTopic;
+    
+    doc["payload_on"] = "ON";
+    doc["payload_off"] = "OFF";
+    doc["optimistic"] = false;
+    doc["retain"] = true;
+    
+    JsonObject device = doc.createNestedObject("device");
     device["identifiers"][0] = deviceId;
     device["name"] = Config::DEVICE_NAME;
     device["model"] = DEVICE_MODEL;
     device["manufacturer"] = DEVICE_MANUFACTURER;
     device["sw_version"] = Config::FIRMWARE_VERSION;
-    device["configuration_url"] = "http://" + WiFi.localIP().toString();
     
-    String discoveryTopic = getDiscoveryTopic("switch", "led");
-    String payload;
-    serializeJson(ledSwitch, payload);
+    char configUrl[64];
+    snprintf(configUrl, sizeof(configUrl), "http://%s", localIP);
+    device["configuration_url"] = configUrl;
     
-    Serial.println("MQTT: Publishing to topic: " + discoveryTopic);
-    Serial.println("MQTT: Payload: " + payload);
+    char payload[1024];
+    serializeJson(doc, payload, sizeof(payload));
     
-    bool result = mqttClient.publish(discoveryTopic.c_str(), payload.c_str(), true);
-    Serial.println("MQTT: Publish result: " + String(result ? "SUCCESS" : "FAILED"));
-    
-    Serial.println("MQTT: Published LED switch discovery");
+    esp_mqtt_client_publish(mqtt_client, discoveryTopic, payload, 0, 1, true);
+    ESP_LOGI(TAG, "Published LED switch discovery");
 }
 
 void MQTTManager::publishSensorDiscovery() {
-    String deviceId = getDeviceId();
-    String baseTopic = getHomeAssistantBaseTopic();
-    
-    DynamicJsonDocument wifiSensor(512);
-    wifiSensor["unique_id"] = deviceId + "_wifi_signal";
-    wifiSensor["name"] = String(Config::DEVICE_NAME) + " WiFi";
-    wifiSensor["state_topic"] = baseTopic + "/sensor/wifi_signal";
-    wifiSensor["unit_of_measurement"] = "dBm";
-    wifiSensor["device_class"] = "signal_strength";
-    wifiSensor["state_class"] = "measurement";
-    wifiSensor["entity_category"] = "diagnostic";
-    
-    JsonObject device = wifiSensor.createNestedObject("device");
-    device["identifiers"][0] = deviceId;
-    device["name"] = Config::DEVICE_NAME;
-    device["model"] = DEVICE_MODEL;
-    device["manufacturer"] = DEVICE_MANUFACTURER;
-    device["sw_version"] = Config::FIRMWARE_VERSION;
-    device["configuration_url"] = "http://" + WiFi.localIP().toString();
-    
-    String discoveryTopic = getDiscoveryTopic("sensor", "wifi_signal");
-    String payload;
-    serializeJson(wifiSensor, payload);
-    
-    Serial.println("MQTT: Publishing sensor to topic: " + discoveryTopic);
-    bool result = mqttClient.publish(discoveryTopic.c_str(), payload.c_str(), true);
-    Serial.println("MQTT: Sensor publish result: " + String(result ? "SUCCESS" : "FAILED"));
-    
-    DynamicJsonDocument uptimeSensor(512);
-    uptimeSensor["unique_id"] = deviceId + "_uptime";
-    uptimeSensor["name"] = String(Config::DEVICE_NAME) + " Uptime";
-    uptimeSensor["state_topic"] = baseTopic + "/sensor/uptime";
-    uptimeSensor["unit_of_measurement"] = "s";
-    uptimeSensor["device_class"] = "duration";
-    uptimeSensor["state_class"] = "total_increasing";
-    uptimeSensor["entity_category"] = "diagnostic";
-    
-    JsonObject device2 = uptimeSensor.createNestedObject("device");
-    device2["identifiers"][0] = deviceId;
-    device2["name"] = Config::DEVICE_NAME;
-    device2["model"] = DEVICE_MODEL;
-    device2["manufacturer"] = DEVICE_MANUFACTURER;
-    device2["sw_version"] = Config::FIRMWARE_VERSION;
-    device2["configuration_url"] = "http://" + WiFi.localIP().toString();
-    
-    discoveryTopic = getDiscoveryTopic("sensor", "uptime");
-    String uptimePayload;
-    serializeJson(uptimeSensor, uptimePayload);
-    
-    Serial.println("MQTT: Publishing uptime sensor to topic: " + discoveryTopic);
-    result = mqttClient.publish(discoveryTopic.c_str(), uptimePayload.c_str(), true);
-    Serial.println("MQTT: Uptime sensor publish result: " + String(result ? "SUCCESS" : "FAILED"));
-    
-    DynamicJsonDocument fanSensor(512);
-    fanSensor["unique_id"] = deviceId + "_fan_speed";
-    fanSensor["name"] = String(Config::DEVICE_NAME) + " Lüfter";
-    fanSensor["state_topic"] = baseTopic + "/sensor/fan_speed";
-    fanSensor["unit_of_measurement"] = "%";
-    fanSensor["icon"] = "mdi:fan";
-    fanSensor["state_class"] = "measurement";
-    
-    JsonObject device3 = fanSensor.createNestedObject("device");
-    device3["identifiers"][0] = deviceId;
-    device3["name"] = Config::DEVICE_NAME;
-    device3["model"] = DEVICE_MODEL;
-    device3["manufacturer"] = DEVICE_MANUFACTURER;
-    device3["sw_version"] = Config::FIRMWARE_VERSION;
-    device3["configuration_url"] = "http://" + WiFi.localIP().toString();
-    
-    discoveryTopic = getDiscoveryTopic("sensor", "fan_speed");
-    String fanPayload;
-    serializeJson(fanSensor, fanPayload);
-    
-    Serial.println("MQTT: Publishing fan speed sensor to topic: " + discoveryTopic);
-    result = mqttClient.publish(discoveryTopic.c_str(), fanPayload.c_str(), true);
-    Serial.println("MQTT: Fan speed sensor publish result: " + String(result ? "SUCCESS" : "FAILED"));
-    
-    DynamicJsonDocument tempSensor(512);
-    tempSensor["unique_id"] = deviceId + "_temperature";
-    tempSensor["name"] = String(Config::DEVICE_NAME) + " Temperatur";
-    tempSensor["state_topic"] = baseTopic + "/sensor/temperature";
-    tempSensor["unit_of_measurement"] = "°C";
-    tempSensor["device_class"] = "temperature";
-    tempSensor["state_class"] = "measurement";
-    
-    JsonObject device4 = tempSensor.createNestedObject("device");
-    device4["identifiers"][0] = deviceId;
-    device4["name"] = Config::DEVICE_NAME;
-    device4["model"] = DEVICE_MODEL;
-    device4["manufacturer"] = DEVICE_MANUFACTURER;
-    device4["sw_version"] = Config::FIRMWARE_VERSION;
-    device4["configuration_url"] = "http://" + WiFi.localIP().toString();
-    
-    discoveryTopic = getDiscoveryTopic("sensor", "temperature");
-    String tempPayload;
-    serializeJson(tempSensor, tempPayload);
-    
-    Serial.println("MQTT: Publishing temperature sensor to topic: " + discoveryTopic);
-    result = mqttClient.publish(discoveryTopic.c_str(), tempPayload.c_str(), true);
-    Serial.println("MQTT: Temperature sensor publish result: " + String(result ? "SUCCESS" : "FAILED"));
-    
-    Serial.println("MQTT: Published sensor discoveries");
+    // TODO: Publish temperature and other sensor discoveries
+    ESP_LOGI(TAG, "Sensor discovery (placeholder)");
 }
 
 void MQTTManager::publishButtonDiscovery() {
-    String deviceId = getDeviceId();
-    String baseTopic = getHomeAssistantBaseTopic();
-    
-    DynamicJsonDocument restartButton(1024);
-    restartButton["unique_id"] = deviceId + "_restart";
-    restartButton["name"] = String(Config::DEVICE_NAME) + " Restart";
-    restartButton["command_topic"] = baseTopic + "/button/restart";
-    restartButton["device_class"] = "restart";
-    restartButton["entity_category"] = "config";
-    
-    JsonObject device = restartButton.createNestedObject("device");
-    device["identifiers"][0] = deviceId;
-    device["name"] = Config::DEVICE_NAME;
-    device["model"] = DEVICE_MODEL;
-    device["manufacturer"] = DEVICE_MANUFACTURER;
-    device["sw_version"] = Config::FIRMWARE_VERSION;
-    device["configuration_url"] = "http://" + WiFi.localIP().toString();
-    
-    String discoveryTopic = getDiscoveryTopic("button", "restart");
-    String payload;
-    serializeJson(restartButton, payload);
-    mqttClient.publish(discoveryTopic.c_str(), payload.c_str(), true);
-    
-    Serial.println("MQTT: Published button discoveries");
-}
-
-void MQTTManager::subscribeToCommands() {
-    String baseTopic = getHomeAssistantBaseTopic();
-    
-    String ledTopic = baseTopic + "/led/set";
-    mqttClient.subscribe(ledTopic.c_str());
-    
-    String restartTopic = baseTopic + "/button/restart";
-    mqttClient.subscribe(restartTopic.c_str());
-    
-    Serial.println("MQTT: Subscribed to command topics");
+    // TODO: Publish button discoveries if needed
+    ESP_LOGI(TAG, "Button discovery (placeholder)");
 }
 
 void MQTTManager::publishDeviceState() {
-    if (!mqttClient.connected()) return;
+    if (!mqtt_client || !connected) return;
     
-    String baseTopic = getHomeAssistantBaseTopic();
+    char statusTopic[256];
+    char baseTopic[128];
+    getBaseTopic(baseTopic, sizeof(baseTopic));
+    snprintf(statusTopic, sizeof(statusTopic), "%s/status", baseTopic);
     
-    int rssi = WiFi.RSSI();
-    String wifiTopic = baseTopic + "/sensor/wifi_signal";
-    mqttClient.publish(wifiTopic.c_str(), String(rssi).c_str());
-    
-    unsigned long uptime = millis() / 1000;
-    String uptimeTopic = baseTopic + "/sensor/uptime";
-    mqttClient.publish(uptimeTopic.c_str(), String(uptime).c_str());
-    
-    int currentPWM = ledcRead(0);
-    publishFanSpeed(currentPWM);
-    
-    String statusTopic = baseTopic + "/status";
-    mqttClient.publish(statusTopic.c_str(), "online", true);
+    esp_mqtt_client_publish(mqtt_client, statusTopic, "online", 0, 1, true);
 }
 
 void MQTTManager::publishFanSpeed(int pwmDuty) {
-    if (!mqttClient.connected()) return;
+    if (!mqtt_client || !connected) return;
     
-    String baseTopic = getHomeAssistantBaseTopic();
-    String fanTopic = baseTopic + "/sensor/fan_speed";
+    char topic[256];
+    char baseTopic[128];
+    getBaseTopic(baseTopic, sizeof(baseTopic));
+    snprintf(topic, sizeof(topic), "%s/fan/speed", baseTopic);
     
-    float percentage = (pwmDuty / 255.0) * 100.0;
+    char payload[32];
+    snprintf(payload, sizeof(payload), "%d", pwmDuty);
     
-    mqttClient.publish(fanTopic.c_str(), String(percentage, 1).c_str());
-    Serial.printf("MQTT: Published fan speed: %.1f%%\n", percentage);
+    esp_mqtt_client_publish(mqtt_client, topic, payload, 0, 0, false);
 }
 
 void MQTTManager::publishTemperature(float tempCelsius) {
-    if (!mqttClient.connected()) return;
+    if (!mqtt_client || !connected) return;
     
-    String baseTopic = getHomeAssistantBaseTopic();
-    String tempTopic = baseTopic + "/sensor/temperature";
+    char topic[256];
+    char baseTopic[128];
+    getBaseTopic(baseTopic, sizeof(baseTopic));
+    snprintf(topic, sizeof(topic), "%s/temperature", baseTopic);
     
-    mqttClient.publish(tempTopic.c_str(), String(tempCelsius, 1).c_str());
-    Serial.printf("MQTT: Published temperature: %.1f°C\n", tempCelsius);
+    char payload[32];
+    snprintf(payload, sizeof(payload), "%.2f", tempCelsius);
+    
+    esp_mqtt_client_publish(mqtt_client, topic, payload, 0, 0, false);
 }
 
-void MQTTManager::publishSensorData(const String& sensor, float value, const String& unit) {
-    if (!mqttClient.connected()) return;
+void MQTTManager::publishSensorData(const char* sensor, float value, const char* unit) {
+    if (!mqtt_client || !connected) return;
     
-    String topic = getBaseTopic() + "/sensor/" + sensor;
-    mqttClient.publish(topic.c_str(), String(value).c_str());
-}
-
-void MQTTManager::handleIncomingMessage(char* topic, byte* payload, unsigned int length) {
-    String message;
-    for (unsigned int i = 0; i < length; i++) {
-        message += (char)payload[i];
+    char topic[256];
+    char baseTopic[128];
+    getBaseTopic(baseTopic, sizeof(baseTopic));
+    snprintf(topic, sizeof(topic), "%s/sensor/%s", baseTopic, sensor);
+    
+    char payload[64];
+    if (strlen(unit) > 0) {
+        snprintf(payload, sizeof(payload), "%.2f %s", value, unit);
+    } else {
+        snprintf(payload, sizeof(payload), "%.2f", value);
     }
     
-    String topicStr = String(topic);
-    String baseTopic = getHomeAssistantBaseTopic();
-    
-    Serial.println("MQTT: Received message on " + topicStr + ": " + message);
-    
-    if (topicStr == baseTopic + "/led/set") {
-        if (message == "ON") {
-            if (ledCallback) {
-                ledCallback(true);
-            }
-            mqttClient.publish((baseTopic + "/led/state").c_str(), "ON", true);
-        } else if (message == "OFF") {
-            if (ledCallback) {
-                ledCallback(false);
-            }
-            mqttClient.publish((baseTopic + "/led/state").c_str(), "OFF", true);
-        }
-    }
-    
-    if (topicStr == baseTopic + "/button/restart") {
-        Serial.println("MQTT: Restart requested via Home Assistant");
-        delay(1000);
-        ESP.restart();
-    }
-}
-
-String MQTTManager::getDeviceId() {
-    String mac = getMacAddress().substring(9);
-    mac.replace(":", "_");
-    return mac;
-}
-
-String MQTTManager::getMacAddress() {
-    return WiFi.macAddress();
-}
-
-String MQTTManager::getBaseTopic() {
-    if (strlen(Config::MQTT_TOPIC) > 0) {
-        return String(Config::MQTT_TOPIC) + "/" + getDeviceId();
-    }
-    return "homeassistant/esp32/" + getDeviceId();
-}
-
-String MQTTManager::getHomeAssistantBaseTopic() {
-    return "homeassistant/esp32/" + getDeviceId();
-}
-
-String MQTTManager::getDiscoveryTopic(const String& component, const String& objectId) {
-    String nodeId = getDeviceId();
-    return "homeassistant/" + component + "/" + nodeId + "/" + objectId + "/config";
+    esp_mqtt_client_publish(mqtt_client, topic, payload, 0, 0, false);
 }

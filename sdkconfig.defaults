@@ -1,0 +1,7 @@
+# Bluetooth Configuration
+CONFIG_BT_ENABLED=y
+CONFIG_BLUEDROID_ENABLED=y
+CONFIG_BT_BLE_ENABLED=y
+
+# Disable Bluetooth HID (nicht benötigt)
+CONFIG_ESP_HID_ENABLED=n

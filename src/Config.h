@@ -1,11 +1,12 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 namespace Config {
     constexpr uint16_t HTTP_PORT = 80;
     constexpr uint8_t LED_PIN    = 27;
     constexpr uint16_t NUM_LEDS  = 1;
-    constexpr char FIRMWARE_VERSION[] = "0.0.1";
+    constexpr char FIRMWARE_VERSION[] = "0.0.1-ESPIDF";
 
     constexpr char AP_SSID[] = "Smarthome-Assistant-AP";
     constexpr char AP_PASS[] = "smarthome-assistant.info";
@@ -19,6 +20,7 @@ namespace Config {
     extern char MQTT_TOPIC[64];
     extern char TEMP_UNIT[16];
     extern bool AP_ENABLED;
+    extern bool AP_EMERGENCY_MODE; // True when AP is running as emergency fallback
     extern char LAST_PASSWORD_CHANGE[32];
     
     extern float TEMP_START;
@@ -26,15 +28,15 @@ namespace Config {
     extern bool AUTO_PWM_ENABLED;
     
     // Manual PWM Mode settings
-    extern bool MANUAL_PWM_MODE;      // false = Auto, true = Manual
-    extern uint32_t MANUAL_PWM_FREQ;  // PWM Frequency in Hz
-    extern uint8_t MANUAL_PWM_DUTY;   // PWM Duty Cycle in % (0-100)
+    extern bool MANUAL_PWM_MODE;
+    extern uint32_t MANUAL_PWM_FREQ;
+    extern uint8_t MANUAL_PWM_DUTY;
     
     // Bluetooth Proxy settings
-    extern bool BT_PROXY_ENABLED;     // Enable/Disable Bluetooth Proxy
-    extern char BT_PROXY_NAME[32];    // Bluetooth Proxy Device Name
+    extern bool BT_PROXY_ENABLED;
+    extern char BT_PROXY_NAME[32];
 
-    void loadSettings();
+    void load();  // Umbenennt von loadSettings()
     void saveWebPassword(const char* newPassword);
     void saveDeviceName(const char* newName);
     void saveMQTTSettings(const char* server, uint16_t port, const char* user, const char* pass, const char* topic);
@@ -47,5 +49,5 @@ namespace Config {
     void saveBTProxyEnabled(bool enabled);
     void saveBTProxyName(const char* name);
     void factoryReset();
-    String getLastPasswordChange();
+    const char* getLastPasswordChange();  // Geändert von String zu const char*
 }
