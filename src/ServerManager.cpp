@@ -17,13 +17,25 @@
 
 static const char *TAG = "SERVER";
 
+// Macro for token validation in protected handlers
+#define REQUIRE_AUTH() \
+    do { \
+        if (!check_auth(req)) { \
+            ESP_LOGW(TAG, "Unauthorized API access to %s", req->uri); \
+            httpd_resp_set_status(req, "401 Unauthorized"); \
+            send_json_response(req, "{\"error\":\"Unauthorized - invalid or missing token\"}"); \
+            return ESP_OK; \
+        } \
+    } while(0)
+
 extern LEDManager led;
 extern MQTTManager mqttManager;
 extern WiFiManager wifi;
 
 static ServerManager* serverInstance = nullptr;
 
-ServerManager::ServerManager() : server(nullptr) {
+ServerManager::ServerManager() : server(nullptr), ledManager(nullptr), ledState(false), 
+                                 ledColorR(255), ledColorG(255), ledColorB(255) {
     serverInstance = this;
 }
 
@@ -64,12 +76,49 @@ void ServerManager::begin() {
     config.max_uri_handlers = 50;  // Increased to accommodate all routes
     config.stack_size = 8192;
     config.uri_match_fn = httpd_uri_match_wildcard;  // Enable wildcard/query string matching
+    config.lru_purge_enable = true;  // Enable connection purging
+    config.recv_wait_timeout = 10;   // Timeout for receiving data
+    config.send_wait_timeout = 10;   // Timeout for sending data
     
     if (httpd_start(&server, &config) == ESP_OK) {
         setupRoutes();
+        ESP_LOGI(TAG, "All routes registered");
         ESP_LOGI(TAG, "Web server started on port %d", Config::HTTP_PORT);
+        ESP_LOGI(TAG, "Server listening on all network interfaces (0.0.0.0:%d)", Config::HTTP_PORT);
     } else {
         ESP_LOGE(TAG, "Failed to start web server");
+    }
+}
+
+void ServerManager::restart() {
+    ESP_LOGI(TAG, "Restarting HTTP server to bind to new network interface...");
+    
+    // Stop existing server
+    if (server != NULL) {
+        httpd_stop(server);
+        server = NULL;
+        ESP_LOGI(TAG, "HTTP server stopped");
+    }
+    
+    // Wait a moment for cleanup
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    // Start server again
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = Config::HTTP_PORT;
+    config.max_uri_handlers = 50;
+    config.stack_size = 8192;
+    config.uri_match_fn = httpd_uri_match_wildcard;
+    config.lru_purge_enable = true;
+    config.recv_wait_timeout = 10;
+    config.send_wait_timeout = 10;
+    
+    if (httpd_start(&server, &config) == ESP_OK) {
+        setupRoutes();
+        ESP_LOGI(TAG, "HTTP server restarted successfully");
+        ESP_LOGI(TAG, "Server now accessible on all network interfaces");
+    } else {
+        ESP_LOGE(TAG, "Failed to restart HTTP server");
     }
 }
 
@@ -193,6 +242,9 @@ void ServerManager::setupRoutes() {
     // LED & Auth APIs
     httpd_uri_t api_led_toggle = {.uri = "/api/led-toggle", .method = HTTP_POST, .handler = api_led_toggle_handler, .user_ctx = this};
     httpd_register_uri_handler(server, &api_led_toggle);
+    
+    httpd_uri_t api_led_color = {.uri = "/api/led-color", .method = HTTP_POST, .handler = api_led_color_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_led_color);
     
     httpd_uri_t api_change_password = {.uri = "/api/change-password", .method = HTTP_POST, .handler = api_change_password_handler, .user_ctx = this};
     httpd_register_uri_handler(server, &api_change_password);
@@ -350,6 +402,31 @@ void ServerManager::send_json_response(httpd_req_t *req, const char* json) {
     httpd_resp_send(req, json, strlen(json));
 }
 
+void ServerManager::url_decode(char* dst, const char* src, size_t dst_size) {
+    size_t src_len = strlen(src);
+    size_t dst_index = 0;
+    
+    for (size_t i = 0; i < src_len && dst_index < dst_size - 1; i++) {
+        if (src[i] == '%' && i + 2 < src_len) {
+            // Hex decode
+            char hex[3] = {src[i+1], src[i+2], '\0'};
+            char* endptr;
+            long value = strtol(hex, &endptr, 16);
+            if (*endptr == '\0') {
+                dst[dst_index++] = (char)value;
+                i += 2; // Skip the two hex digits
+            } else {
+                dst[dst_index++] = src[i]; // Invalid hex, copy as-is
+            }
+        } else if (src[i] == '+') {
+            dst[dst_index++] = ' '; // Convert + to space
+        } else {
+            dst[dst_index++] = src[i];
+        }
+    }
+    dst[dst_index] = '\0';
+}
+
 bool ServerManager::check_auth(httpd_req_t *req) {
     // Check for token in URL parameter
     char query[128] = {0};
@@ -416,10 +493,26 @@ esp_err_t ServerManager::login_handler(httpd_req_t *req) {
 }
 
 esp_err_t ServerManager::main_handler(httpd_req_t *req) {
+    // Require valid token to access main page
+    if (!check_auth(req)) {
+        ESP_LOGW(TAG, "Unauthorized access to main.html - redirecting to login");
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "/login.html");
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
     return serve_spiffs_file(req, "/spiffs/main.html", "text/html");
 }
 
 esp_err_t ServerManager::setting_handler(httpd_req_t *req) {
+    // Require valid token to access settings page
+    if (!check_auth(req)) {
+        ESP_LOGW(TAG, "Unauthorized access to setting.html - redirecting to login");
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "/login.html");
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
     return serve_spiffs_file(req, "/spiffs/setting.html", "text/html");
 }
 
@@ -432,6 +525,8 @@ esp_err_t ServerManager::logo_handler(httpd_req_t *req) {
 }
 
 esp_err_t ServerManager::api_status_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     DynamicJsonDocument doc(768);
     doc["status"] = "online";
     doc["device_name"] = Config::DEVICE_NAME;
@@ -465,8 +560,12 @@ esp_err_t ServerManager::api_status_handler(httpd_req_t *req) {
     // Memory info
     doc["free_memory"] = esp_get_free_heap_size() / 1024; // KB
     
-    // LED state - TODO: get from LEDManager
-    doc["led_state"] = false;
+    // LED state from ServerManager
+    ServerManager* manager = (ServerManager*)req->user_ctx;
+    doc["led_state"] = manager->ledState;
+    doc["led_r"] = manager->ledColorR;
+    doc["led_g"] = manager->ledColorG;
+    doc["led_b"] = manager->ledColorB;
     
     char json[768];
     serializeJson(doc, json, sizeof(json));
@@ -475,6 +574,8 @@ esp_err_t ServerManager::api_status_handler(httpd_req_t *req) {
 }
 
 esp_err_t ServerManager::api_device_name_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     char buf[128];
     int ret = httpd_req_recv(req, buf, sizeof(buf));
     if (ret <= 0) {
@@ -517,6 +618,8 @@ esp_err_t ServerManager::api_device_name_handler(httpd_req_t *req) {
 }
 
 esp_err_t ServerManager::api_reboot_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     send_json_response(req, "{\"success\":true,\"message\":\"Rebooting...\"}");
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
@@ -524,6 +627,8 @@ esp_err_t ServerManager::api_reboot_handler(httpd_req_t *req) {
 }
 
 esp_err_t ServerManager::api_wifi_status_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     DynamicJsonDocument doc(512);
     bool isConnected = wifi.isConnected();
     doc["connected"] = isConnected;
@@ -576,6 +681,8 @@ esp_err_t ServerManager::api_wifi_status_handler(httpd_req_t *req) {
 }
 
 esp_err_t ServerManager::api_pwm_status_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     DynamicJsonDocument doc(512);
     doc["manual_mode"] = Config::MANUAL_PWM_MODE;
     doc["manual_freq"] = Config::MANUAL_PWM_FREQ;
@@ -596,6 +703,8 @@ esp_err_t ServerManager::api_pwm_status_handler(httpd_req_t *req) {
 }
 
 esp_err_t ServerManager::api_pwm_control_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     char buf[256];
     int ret = httpd_req_recv(req, buf, sizeof(buf));
     if (ret <= 0) {
@@ -776,6 +885,8 @@ esp_err_t ServerManager::api_system_info_handler(httpd_req_t *req) {
 
 // Settings Handler - returns all current settings
 esp_err_t ServerManager::api_settings_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     DynamicJsonDocument doc(1536);
     doc["device_name"] = Config::DEVICE_NAME;
     doc["deviceName"] = Config::DEVICE_NAME; // Alias for compatibility
@@ -826,6 +937,8 @@ esp_err_t ServerManager::api_settings_handler(httpd_req_t *req) {
 
 // Restart Handler
 esp_err_t ServerManager::api_restart_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     ESP_LOGI(TAG, "Restart requested");
     send_json_response(req, "{\"success\":true,\"message\":\"Restarting...\"}");
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -835,6 +948,8 @@ esp_err_t ServerManager::api_restart_handler(httpd_req_t *req) {
 
 // Factory Reset Handler
 esp_err_t ServerManager::api_factory_reset_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     ESP_LOGI(TAG, "Factory reset requested");
     
     // Clear NVS
@@ -854,6 +969,8 @@ esp_err_t ServerManager::api_factory_reset_handler(httpd_req_t *req) {
 
 // WiFi Scan Handler
 esp_err_t ServerManager::api_wifi_scan_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     ESP_LOGI(TAG, "WiFi scan requested");
     
     // Check if WiFi is initialized
@@ -887,7 +1004,8 @@ esp_err_t ServerManager::api_wifi_scan_handler(httpd_req_t *req) {
         vTaskDelay(pdMS_TO_TICKS(500)); // Give it time to switch and initialize
     }
     
-    // Start WiFi scan
+    // Start WiFi scan optimized for APSTA mode
+    // Use ACTIVE scan with minimal time to reduce disruption
     wifi_scan_config_t scan_config = {
         .ssid = NULL,
         .bssid = NULL,
@@ -896,14 +1014,17 @@ esp_err_t ServerManager::api_wifi_scan_handler(httpd_req_t *req) {
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
         .scan_time = {
             .active = {
-                .min = 100,
-                .max = 300
+                .min = 0,      // Minimal time per channel
+                .max = 120     // Max 120ms per channel (reduced from default 300ms)
             },
             .passive = 0
         },
-        .home_chan_dwell_time = 0,
-        .channel_bitmap = {0},
-        .coex_background_scan = false
+        .home_chan_dwell_time = 30,  // Return to AP channel every 30ms to service clients
+        .channel_bitmap = {
+            .ghz_2_channels = 0,
+            .ghz_5_channels = 0
+        },
+        .coex_background_scan = false  // Disable to avoid longer scan times
     };
     
     err = esp_wifi_scan_start(&scan_config, true);
@@ -967,6 +1088,8 @@ esp_err_t ServerManager::api_wifi_scan_handler(httpd_req_t *req) {
 
 // WiFi Connect Handler (POST /wifi_connect)
 esp_err_t ServerManager::api_wifi_connect_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     char buf[256];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
@@ -984,9 +1107,12 @@ esp_err_t ServerManager::api_wifi_connect_handler(httpd_req_t *req) {
         char *ssid_end = strchr(ssid_start, '&');
         int len = ssid_end ? (ssid_end - ssid_start) : strlen(ssid_start);
         if (len > 0 && len < sizeof(ssid)) {
-            strncpy(ssid, ssid_start, len);
-            ssid[len] = '\0';
-            // URL decode if needed
+            char temp_ssid[64];
+            strncpy(temp_ssid, ssid_start, len);
+            temp_ssid[len] = '\0';
+            // URL decode SSID
+            url_decode(ssid, temp_ssid, sizeof(ssid));
+            ESP_LOGI(TAG, "Decoded SSID: %s", ssid);
         }
     }
     
@@ -995,8 +1121,11 @@ esp_err_t ServerManager::api_wifi_connect_handler(httpd_req_t *req) {
         char *pwd_end = strchr(pwd_start, '&');
         int len = pwd_end ? (pwd_end - pwd_start) : strlen(pwd_start);
         if (len > 0 && len < sizeof(password)) {
-            strncpy(password, pwd_start, len);
-            password[len] = '\0';
+            char temp_pwd[64];
+            strncpy(temp_pwd, pwd_start, len);
+            temp_pwd[len] = '\0';
+            // URL decode password
+            url_decode(password, temp_pwd, sizeof(password));
         }
     }
     
@@ -1013,11 +1142,32 @@ esp_err_t ServerManager::api_wifi_connect_handler(httpd_req_t *req) {
     }
     
     if (strlen(ssid) > 0 && strlen(password) > 0) {
-        // Connect to WiFi via WiFiManager
-        wifi.beginSTA(ssid, password);
+        // Save WiFi credentials to NVS
+        nvs_handle_t nvs_handle;
+        esp_err_t err = nvs_open("wifi", NVS_READWRITE, &nvs_handle);
+        if (err == ESP_OK) {
+            nvs_set_str(nvs_handle, "ssid", ssid);
+            nvs_set_str(nvs_handle, "password", password);
+            nvs_commit(nvs_handle);
+            nvs_close(nvs_handle);
+            ESP_LOGI(TAG, "WiFi credentials saved to NVS");
+        } else {
+            ESP_LOGE(TAG, "Failed to open NVS for WiFi credentials");
+        }
+        
+        // Start non-blocking WiFi connection
+        // The checkWiFiConnection() loop will pick up the new credentials
+        wifi_config_t sta_config = {};
+        strncpy((char*)sta_config.sta.ssid, ssid, sizeof(sta_config.sta.ssid));
+        strncpy((char*)sta_config.sta.password, password, sizeof(sta_config.sta.password));
+        sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        
+        ESP_LOGI(TAG, "Starting WiFi connection to: %s", ssid);
+        esp_wifi_set_config(WIFI_IF_STA, &sta_config);
+        esp_wifi_connect();
         
         // Return simple success message that HTML expects
-        httpd_resp_send(req, "Success", 7);
+        httpd_resp_send(req, "OK", 2);
         return ESP_OK;
     }
     
@@ -1027,6 +1177,8 @@ esp_err_t ServerManager::api_wifi_connect_handler(httpd_req_t *req) {
 
 // WiFi Disconnect Handler
 esp_err_t ServerManager::api_wifi_disconnect_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     ESP_LOGI(TAG, "WiFi disconnect requested");
     // TODO: Disconnect WiFi via WiFiManager
     // wifi.disconnect();
@@ -1036,6 +1188,8 @@ esp_err_t ServerManager::api_wifi_disconnect_handler(httpd_req_t *req) {
 
 // WiFi Clear Handler
 esp_err_t ServerManager::api_wifi_clear_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     ESP_LOGI(TAG, "Clear WiFi credentials requested");
     // TODO: Clear WiFi credentials from NVS
     // wifi.clearCredentials();
@@ -1045,6 +1199,8 @@ esp_err_t ServerManager::api_wifi_clear_handler(httpd_req_t *req) {
 
 // Toggle AP Handler
 esp_err_t ServerManager::api_toggle_ap_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     char buf[128];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
@@ -1119,6 +1275,8 @@ esp_err_t ServerManager::api_toggle_ap_handler(httpd_req_t *req) {
 
 // MQTT Settings Handler
 esp_err_t ServerManager::api_mqtt_settings_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     char buf[512];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
@@ -1162,9 +1320,11 @@ esp_err_t ServerManager::api_mqtt_settings_handler(httpd_req_t *req) {
             char *start = strstr(buf, "user=") + 5;
             char *end = strchr(start, '&');
             int len = end ? (end - start) : strlen(start);
-            if (len > 0 && len < sizeof(user)) {
-                strncpy(user, start, len);
-                user[len] = '\0';
+            if (len >= 0 && len < sizeof(user)) {
+                char temp[64];
+                strncpy(temp, start, len);
+                temp[len] = '\0';
+                url_decode(user, temp, sizeof(user));
             }
         }
         
@@ -1172,9 +1332,11 @@ esp_err_t ServerManager::api_mqtt_settings_handler(httpd_req_t *req) {
             char *start = strstr(buf, "pass=") + 5;
             char *end = strchr(start, '&');
             int len = end ? (end - start) : strlen(start);
-            if (len > 0 && len < sizeof(pass)) {
-                strncpy(pass, start, len);
-                pass[len] = '\0';
+            if (len >= 0 && len < sizeof(pass)) {
+                char temp[64];
+                strncpy(temp, start, len);
+                temp[len] = '\0';
+                url_decode(pass, temp, sizeof(pass));
             }
         }
     } else {
@@ -1200,7 +1362,8 @@ esp_err_t ServerManager::api_mqtt_settings_handler(httpd_req_t *req) {
         uint16_t port = strlen(port_str) > 0 ? atoi(port_str) : 1883;
         Config::saveMQTTSettings(server, port, user, pass, strlen(topic) > 0 ? topic : Config::MQTT_TOPIC);
         
-        // TODO: Reconnect MQTT client with new settings
+        ESP_LOGI(TAG, "MQTT settings saved, reconnecting...");
+        mqttManager.reconnect();
         
         httpd_resp_send(req, "OK", 2);
         return ESP_OK;
@@ -1212,21 +1375,32 @@ esp_err_t ServerManager::api_mqtt_settings_handler(httpd_req_t *req) {
 
 // MQTT Test Handler
 esp_err_t ServerManager::api_mqtt_test_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     ESP_LOGI(TAG, "MQTT test connection requested");
     
+    // Check current connection status
     bool connected = mqttManager.isConnected();
     
+    char response[256];
     if (connected) {
-        send_json_response(req, "{\"success\":true,\"message\":\"MQTT connected\"}");
+        snprintf(response, sizeof(response), 
+                "{\"success\":true,\"message\":\"MQTT connected to %s:%d\"}", 
+                Config::MQTT_SERVER, Config::MQTT_PORT);
     } else {
-        send_json_response(req, "{\"success\":false,\"error\":\"MQTT not connected\"}");
+        snprintf(response, sizeof(response), 
+                "{\"success\":false,\"error\":\"Not connected. Server=%s:%d, User=%s\"}", 
+                Config::MQTT_SERVER, Config::MQTT_PORT, Config::MQTT_USER);
     }
     
+    send_json_response(req, response);
     return ESP_OK;
 }
 
 // Manual PWM Mode Handler
 esp_err_t ServerManager::api_manual_pwm_mode_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     char buf[128];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
@@ -1264,6 +1438,8 @@ esp_err_t ServerManager::api_manual_pwm_mode_handler(httpd_req_t *req) {
 
 // Manual PWM Settings Handler
 esp_err_t ServerManager::api_manual_pwm_settings_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     char buf[256];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
@@ -1335,6 +1511,8 @@ esp_err_t ServerManager::api_manual_pwm_settings_handler(httpd_req_t *req) {
 
 // Temperature Mapping Handler
 esp_err_t ServerManager::api_temp_mapping_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     char buf[256];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
@@ -1392,6 +1570,8 @@ esp_err_t ServerManager::api_temp_mapping_handler(httpd_req_t *req) {
 
 // Temperature Mapping Status Handler
 esp_err_t ServerManager::api_temp_mapping_status_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     DynamicJsonDocument doc(384);
     doc["tempStart"] = Config::TEMP_START;
     doc["startTemp"] = Config::TEMP_START; // Alias
@@ -1408,6 +1588,8 @@ esp_err_t ServerManager::api_temp_mapping_status_handler(httpd_req_t *req) {
 
 // KMeter Status Handler
 esp_err_t ServerManager::api_kmeter_status_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     ServerManager* serverInstance = (ServerManager*)req->user_ctx;
     
     DynamicJsonDocument doc(768);
@@ -1447,6 +1629,8 @@ esp_err_t ServerManager::api_kmeter_status_handler(httpd_req_t *req) {
 
 // KMeter Config Handler
 esp_err_t ServerManager::api_kmeter_config_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     char buf[256];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
@@ -1515,12 +1699,23 @@ esp_err_t ServerManager::api_kmeter_config_handler(httpd_req_t *req) {
 
 // LED Toggle Handler
 esp_err_t ServerManager::api_led_toggle_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
+    ServerManager* manager = (ServerManager*)req->user_ctx;
+    
     char buf[128];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
         // If no body, just toggle
         ESP_LOGI(TAG, "LED toggle (no body)");
-        // TODO: Toggle LED via LEDManager
+        if (manager->ledManager) {
+            manager->ledState = !manager->ledState;
+            if (manager->ledState) {
+                manager->ledManager->setColor(manager->ledColorR, manager->ledColorG, manager->ledColorB);
+            } else {
+                manager->ledManager->off();
+            }
+        }
         httpd_resp_send(req, "OK", 2);
         return ESP_OK;
     }
@@ -1537,8 +1732,19 @@ esp_err_t ServerManager::api_led_toggle_handler(httpd_req_t *req) {
             state[len] = '\0';
             
             bool enabled = (strcmp(state, "1") == 0);
-            ESP_LOGI(TAG, "LED: %s", enabled ? "ON" : "OFF");
-            // TODO: Set LED via LEDManager
+            ESP_LOGI(TAG, "LED: %s with color R=%d G=%d B=%d", 
+                     enabled ? "ON" : "OFF", 
+                     manager->ledColorR, manager->ledColorG, manager->ledColorB);
+            
+            if (manager->ledManager) {
+                manager->ledState = enabled;
+                if (enabled) {
+                    manager->ledManager->setColor(manager->ledColorR, manager->ledColorG, manager->ledColorB);
+                } else {
+                    manager->ledManager->off();
+                }
+            }
+            
             httpd_resp_send(req, "OK", 2);
             return ESP_OK;
         }
@@ -1564,8 +1770,60 @@ esp_err_t ServerManager::api_led_toggle_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+esp_err_t ServerManager::api_led_color_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
+    ServerManager* manager = (ServerManager*)req->user_ctx;
+    
+    char buf[128];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing RGB values");
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    // Parse form data (r=###&g=###&b=###)
+    int r = 0, g = 0, b = 0;
+    char *r_start = strstr(buf, "r=");
+    char *g_start = strstr(buf, "g=");
+    char *b_start = strstr(buf, "b=");
+    
+    if (r_start && g_start && b_start) {
+        r = atoi(r_start + 2);
+        g = atoi(g_start + 2);
+        b = atoi(b_start + 2);
+        
+        // Validate ranges
+        r = (r < 0) ? 0 : (r > 255) ? 255 : r;
+        g = (g < 0) ? 0 : (g > 255) ? 255 : g;
+        b = (b < 0) ? 0 : (b > 255) ? 255 : b;
+        
+        ESP_LOGI(TAG, "LED color stored: R=%d G=%d B=%d (LED state: %s)", r, g, b, manager->ledState ? "ON" : "OFF");
+        
+        // Store color in manager
+        manager->ledColorR = r;
+        manager->ledColorG = g;
+        manager->ledColorB = b;
+        
+        // Only apply color if LED is currently ON
+        if (manager->ledManager && manager->ledState) {
+            manager->ledManager->setColor(r, g, b);
+            ESP_LOGI(TAG, "LED color applied immediately (LED is ON)");
+        }
+        
+        httpd_resp_send(req, "OK", 2);
+        return ESP_OK;
+    }
+    
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid RGB format");
+    return ESP_FAIL;
+}
+
 // Change Password Handler
 esp_err_t ServerManager::api_change_password_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     char buf[256];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
@@ -1630,6 +1888,8 @@ esp_err_t ServerManager::api_change_password_handler(httpd_req_t *req) {
 
 // Logout Handler
 esp_err_t ServerManager::api_logout_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
     ESP_LOGI(TAG, "Logout - invalidating token");
     
     // Invalidate the current token

@@ -11,6 +11,7 @@ public:
     void loop();
     bool isConnected();
     void disconnect();
+    void reconnect();  // Restart MQTT with new settings
     
     void publishAutoDiscovery();
     void publishDeviceState();
@@ -20,6 +21,7 @@ public:
     
     void publishSensorData(const char* sensor, float value, const char* unit = "");
     void setLEDCallback(void (*callback)(bool state));
+    void setLEDColorCallback(void (*callback)(uint8_t r, uint8_t g, uint8_t b));
     
 private:
     esp_mqtt_client_handle_t mqtt_client;
@@ -28,6 +30,7 @@ private:
     bool autoDiscoveryPublished;
     bool connected;
     void (*ledCallback)(bool state);
+    void (*ledColorCallback)(uint8_t r, uint8_t g, uint8_t b);
     
     bool connect();
     void publishDeviceInfo();

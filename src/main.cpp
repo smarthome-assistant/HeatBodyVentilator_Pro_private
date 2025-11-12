@@ -63,9 +63,27 @@ extern "C" void app_main(void)
     led.begin();
 
     // Webserver starten
+    web.setLEDManager(&led);  // LED-Manager mit Webserver verbinden
     web.begin();
 
-    // MQTT initialisieren
+    // MQTT initialisieren und LED-Callback registrieren
+    mqttManager.setLEDCallback([](bool state) {
+        if (state) {
+            // Use stored color from web interface (accessible via ServerManager)
+            // For now, we'll use white as default - color will be set via RGB callback
+            led.setColorWhite();
+            ESP_LOGI(TAG, "LED turned ON via MQTT");
+        } else {
+            led.off();
+            ESP_LOGI(TAG, "LED turned OFF via MQTT");
+        }
+    });
+    
+    mqttManager.setLEDColorCallback([](uint8_t r, uint8_t g, uint8_t b) {
+        led.setColor(r, g, b);
+        ESP_LOGI(TAG, "LED color changed via MQTT: R=%d G=%d B=%d", r, g, b);
+    });
+    
     mqttManager.begin();
 
     // Bluetooth Proxy TEMPORÄR DEAKTIVIERT

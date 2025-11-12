@@ -334,7 +334,7 @@
         <!-- LED Control Card -->
         <div class="card">
           <div class="card-header">
-            <h3 class="card-title">LED Steuerung</h3>
+            <h3 class="card-title">💡 LED Einstellungen</h3>
           </div>
           <div class="card-content">
             <div class="setting-item">
@@ -358,6 +358,57 @@
                   <input type="checkbox" id="toggleLED-main" onchange="toggleLEDMain()">
                   <span class="slider"></span>
                 </label>
+              </div>
+            </div>
+            
+            <!-- RGB Color Sliders -->
+            <div class="setting-item" style="margin-top: 20px;">
+              <div class="setting-label">
+                <span>🎨 Farbe (RGB)</span>
+              </div>
+            </div>
+            
+            <div class="setting-item">
+              <div class="setting-label">
+                <span style="color: #ff5555;">● Rot</span>
+              </div>
+              <div class="setting-control" style="flex-direction: column; align-items: stretch;">
+                <input type="range" id="led-red" min="0" max="255" value="255" 
+                       oninput="updateLEDColor()" style="width: 100%;">
+                <span id="led-red-value" style="text-align: center; margin-top: 5px;">255</span>
+              </div>
+            </div>
+            
+            <div class="setting-item">
+              <div class="setting-label">
+                <span style="color: #55ff55;">● Grün</span>
+              </div>
+              <div class="setting-control" style="flex-direction: column; align-items: stretch;">
+                <input type="range" id="led-green" min="0" max="255" value="255" 
+                       oninput="updateLEDColor()" style="width: 100%;">
+                <span id="led-green-value" style="text-align: center; margin-top: 5px;">255</span>
+              </div>
+            </div>
+            
+            <div class="setting-item">
+              <div class="setting-label">
+                <span style="color: #5555ff;">● Blau</span>
+              </div>
+              <div class="setting-control" style="flex-direction: column; align-items: stretch;">
+                <input type="range" id="led-blue" min="0" max="255" value="255" 
+                       oninput="updateLEDColor()" style="width: 100%;">
+                <span id="led-blue-value" style="text-align: center; margin-top: 5px;">255</span>
+              </div>
+            </div>
+            
+            <!-- Color Preview -->
+            <div class="setting-item">
+              <div class="setting-label">
+                <span>Vorschau</span>
+              </div>
+              <div class="setting-control">
+                <div id="led-color-preview" style="width: 60px; height: 30px; border-radius: 5px; 
+                     background-color: rgb(255,255,255); border: 2px solid #4a6fa5;"></div>
               </div>
             </div>
           </div>
@@ -430,6 +481,23 @@
             document.getElementById('toggleLED-main').checked = data.led_state;
             updateLEDStatusMain(data.led_state);
           }
+          // Update LED color sliders
+          if (data.led_r !== undefined) {
+            document.getElementById('led-red').value = data.led_r;
+            document.getElementById('led-red-value').textContent = data.led_r;
+          }
+          if (data.led_g !== undefined) {
+            document.getElementById('led-green').value = data.led_g;
+            document.getElementById('led-green-value').textContent = data.led_g;
+          }
+          if (data.led_b !== undefined) {
+            document.getElementById('led-blue').value = data.led_b;
+            document.getElementById('led-blue-value').textContent = data.led_b;
+          }
+          if (data.led_r !== undefined && data.led_g !== undefined && data.led_b !== undefined) {
+            document.getElementById('led-color-preview').style.backgroundColor = 
+              `rgb(${data.led_r},${data.led_g},${data.led_b})`;
+          }
         })
         .catch(error => console.log('Status update failed:', error));
     }, 30000);
@@ -471,6 +539,30 @@
         statusElement.className = 'status-indicator status-disconnected';
         statusElement.innerHTML = '<i class="fas fa-circle" aria-hidden="true"></i><span class="icon-fallback">⚫</span> Ausgeschaltet';
       }
+    }
+    
+    function updateLEDColor() {
+      const r = document.getElementById('led-red').value;
+      const g = document.getElementById('led-green').value;
+      const b = document.getElementById('led-blue').value;
+      
+      // Update value displays
+      document.getElementById('led-red-value').textContent = r;
+      document.getElementById('led-green-value').textContent = g;
+      document.getElementById('led-blue-value').textContent = b;
+      
+      // Update preview
+      document.getElementById('led-color-preview').style.backgroundColor = `rgb(${r},${g},${b})`;
+      
+      // Send to ESP32 (only stores color, doesn't turn on LED)
+      fetch('/api/led-color?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: `r=${r}&g=${g}&b=${b}`
+      })
+        .catch(error => console.log('LED color update failed:', error));
     }
 
     function toggleLED() {

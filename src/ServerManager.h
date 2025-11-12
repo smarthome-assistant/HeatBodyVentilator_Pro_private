@@ -3,12 +3,14 @@
 #include "esp_log.h"
 #include "Config.h"
 #include "KMeterManager.h"
+#include "LEDManager.h"
 #include "driver/ledc.h"
 
 class ServerManager {
 public:
     ServerManager();
     void begin();
+    void restart();  // Restart HTTP server (needed after WiFi connects)
     void handleClient();  // Empty for ESP-IDF (async server)
     void initializePWM();
     void reconfigurePWM(uint32_t frequency);
@@ -16,10 +18,19 @@ public:
     void updateSensors();
     void updateAutoPWM();
     KMeterManager* getKMeterManager() { return &kmeterManager; }
+    void setLEDManager(LEDManager* manager) { ledManager = manager; }
+    void getLEDColor(uint8_t* r, uint8_t* g, uint8_t* b) { *r = ledColorR; *g = ledColorG; *b = ledColorB; }
+    void setLEDColor(uint8_t r, uint8_t g, uint8_t b) { ledColorR = r; ledColorG = g; ledColorB = b; }
+    bool getLEDState() { return ledState; }
     
 private:
     httpd_handle_t server;
     KMeterManager kmeterManager;
+    LEDManager* ledManager;
+    bool ledState;
+    uint8_t ledColorR;
+    uint8_t ledColorG;
+    uint8_t ledColorB;
     
     void setupRoutes();
     int mapTemperatureToPWM(float temperature);
@@ -58,6 +69,7 @@ private:
     static esp_err_t api_kmeter_status_handler(httpd_req_t *req);
     static esp_err_t api_kmeter_config_handler(httpd_req_t *req);
     static esp_err_t api_led_toggle_handler(httpd_req_t *req);
+    static esp_err_t api_led_color_handler(httpd_req_t *req);
     static esp_err_t api_change_password_handler(httpd_req_t *req);
     static esp_err_t api_logout_handler(httpd_req_t *req);
     static esp_err_t api_pwm_control_handler(httpd_req_t *req);
@@ -70,4 +82,5 @@ private:
     static bool is_valid_token(const char* token);
     static void send_json_response(httpd_req_t *req, const char* json);
     static void send_html_response(httpd_req_t *req, const uint8_t* html_start, const uint8_t* html_end);
+    static void url_decode(char* dst, const char* src, size_t dst_size);
 };

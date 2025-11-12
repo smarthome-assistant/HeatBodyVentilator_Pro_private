@@ -639,6 +639,36 @@
           
           <div class="setting-item">
             <div class="setting-label">
+              <span>LED Farbe</span>
+              <small class="d-block" style="color: #6c757d;">RGB Farbauswahl (0-255)</small>
+            </div>
+            <div class="setting-control" style="flex-direction: column; gap: 10px; align-items: stretch;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <label style="min-width: 30px; color: #dc3545;">R:</label>
+                <input type="range" id="led-red-setting" min="0" max="255" value="255" 
+                       style="flex: 1;" oninput="updateLEDColorSetting()">
+                <span id="led-red-value-setting" style="min-width: 40px; text-align: right;">255</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <label style="min-width: 30px; color: #28a745;">G:</label>
+                <input type="range" id="led-green-setting" min="0" max="255" value="255" 
+                       style="flex: 1;" oninput="updateLEDColorSetting()">
+                <span id="led-green-value-setting" style="min-width: 40px; text-align: right;">255</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <label style="min-width: 30px; color: #007bff;">B:</label>
+                <input type="range" id="led-blue-setting" min="0" max="255" value="255" 
+                       style="flex: 1;" oninput="updateLEDColorSetting()">
+                <span id="led-blue-value-setting" style="min-width: 40px; text-align: right;">255</span>
+              </div>
+              <div id="led-color-preview-setting" 
+                   style="width: 100%; height: 40px; border-radius: 4px; background-color: rgb(255,255,255); border: 1px solid #dee2e6;">
+              </div>
+            </div>
+          </div>
+          
+          <div class="setting-item">
+            <div class="setting-label">
               <span>Auto Discovery</span>
               <small class="d-block" style="color: #6c757d;">Home Assistant Integration</small>
             </div>
@@ -1256,6 +1286,23 @@
             document.getElementById('toggleLED').checked = data.led_state;
             updateLEDStatus(data.led_state);
           }
+          // Update LED color sliders
+          if (data.led_r !== undefined) {
+            document.getElementById('led-red-setting').value = data.led_r;
+            document.getElementById('led-red-value-setting').textContent = data.led_r;
+          }
+          if (data.led_g !== undefined) {
+            document.getElementById('led-green-setting').value = data.led_g;
+            document.getElementById('led-green-value-setting').textContent = data.led_g;
+          }
+          if (data.led_b !== undefined) {
+            document.getElementById('led-blue-setting').value = data.led_b;
+            document.getElementById('led-blue-value-setting').textContent = data.led_b;
+          }
+          if (data.led_r !== undefined && data.led_g !== undefined && data.led_b !== undefined) {
+            document.getElementById('led-color-preview-setting').style.backgroundColor = 
+              `rgb(${data.led_r},${data.led_g},${data.led_b})`;
+          }
           
           // Update last password change
           if (data.last_password_change) {
@@ -1284,6 +1331,23 @@
           if (data.led_state !== undefined) {
             document.getElementById('toggleLED').checked = data.led_state;
             updateLEDStatus(data.led_state);
+          }
+          // Update LED color sliders in status polling
+          if (data.led_r !== undefined) {
+            document.getElementById('led-red-setting').value = data.led_r;
+            document.getElementById('led-red-value-setting').textContent = data.led_r;
+          }
+          if (data.led_g !== undefined) {
+            document.getElementById('led-green-setting').value = data.led_g;
+            document.getElementById('led-green-value-setting').textContent = data.led_g;
+          }
+          if (data.led_b !== undefined) {
+            document.getElementById('led-blue-setting').value = data.led_b;
+            document.getElementById('led-blue-value-setting').textContent = data.led_b;
+          }
+          if (data.led_r !== undefined && data.led_g !== undefined && data.led_b !== undefined) {
+            document.getElementById('led-color-preview-setting').style.backgroundColor = 
+              `rgb(${data.led_r},${data.led_g},${data.led_b})`;
           }
           
           // Update PWM status
@@ -1369,6 +1433,30 @@
         statusElement.className = 'status-indicator status-disconnected';
         statusElement.innerHTML = '<i class="fas fa-circle" aria-hidden="true"></i><span class="icon-fallback">⚫</span> Ausgeschaltet';
       }
+    }
+    
+    function updateLEDColorSetting() {
+      const r = document.getElementById('led-red-setting').value;
+      const g = document.getElementById('led-green-setting').value;
+      const b = document.getElementById('led-blue-setting').value;
+      
+      // Update value displays
+      document.getElementById('led-red-value-setting').textContent = r;
+      document.getElementById('led-green-value-setting').textContent = g;
+      document.getElementById('led-blue-value-setting').textContent = b;
+      
+      // Update preview
+      document.getElementById('led-color-preview-setting').style.backgroundColor = `rgb(${r},${g},${b})`;
+      
+      // Send to ESP32 (only stores color, doesn't turn on LED)
+      fetch('/api/led-color?token=' + getToken(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: `r=${r}&g=${g}&b=${b}`
+      })
+        .catch(error => console.log('LED color update failed:', error));
     }
 
     // Fan Control Functions
