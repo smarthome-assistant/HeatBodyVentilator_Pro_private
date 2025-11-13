@@ -5,3 +5,6 @@ CONFIG_BT_BLE_ENABLED=y
 
 # Disable Bluetooth HID (nicht benötigt)
 CONFIG_ESP_HID_ENABLED=n
+
+# MQTT Configuration
+CONFIG_MQTT_TASK_STACK_SIZE=8192

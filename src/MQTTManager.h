@@ -15,6 +15,7 @@ public:
     
     void publishAutoDiscovery();
     void publishDeviceState();
+    void publishLEDState(bool isOn, uint8_t r, uint8_t g, uint8_t b);
     
     void publishFanSpeed(int pwmDuty);
     void publishTemperature(float tempCelsius);

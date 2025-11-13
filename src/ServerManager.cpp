@@ -925,7 +925,13 @@ esp_err_t ServerManager::api_settings_handler(httpd_req_t *req) {
     doc["ap_enabled"] = ap_running;
     doc["apEnabled"] = ap_running; // Alias
     
-    doc["led_state"] = false; // TODO: Get from LEDManager
+    // LED state and color
+    ServerManager* manager = (ServerManager*)req->user_ctx;
+    doc["led_state"] = manager->ledState;
+    doc["led_r"] = manager->ledColorR;
+    doc["led_g"] = manager->ledColorG;
+    doc["led_b"] = manager->ledColorB;
+    
     doc["firmware_version"] = Config::FIRMWARE_VERSION;
     doc["last_password_change"] = "Nie"; // TODO: Track this in NVS
     

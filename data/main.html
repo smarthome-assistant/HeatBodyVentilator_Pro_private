@@ -707,9 +707,27 @@ SmartHome-Assistant (Markus Reza Tain)`;
       fetch('/api/status?token=' + getToken())
         .then(response => response.json())
         .then(data => {
+          // Update LED state
           if (data.led_state !== undefined) {
             document.getElementById('toggleLED-main').checked = data.led_state;
             updateLEDStatusMain(data.led_state);
+          }
+          // Update LED color sliders
+          if (data.led_r !== undefined) {
+            document.getElementById('led-red').value = data.led_r;
+            document.getElementById('led-red-value').textContent = data.led_r;
+          }
+          if (data.led_g !== undefined) {
+            document.getElementById('led-green').value = data.led_g;
+            document.getElementById('led-green-value').textContent = data.led_g;
+          }
+          if (data.led_b !== undefined) {
+            document.getElementById('led-blue').value = data.led_b;
+            document.getElementById('led-blue-value').textContent = data.led_b;
+          }
+          if (data.led_r !== undefined && data.led_g !== undefined && data.led_b !== undefined) {
+            document.getElementById('led-color-preview').style.backgroundColor = 
+              `rgb(${data.led_r},${data.led_g},${data.led_b})`;
           }
         })
         .catch(error => console.log('Initial status load failed:', error));

@@ -13,7 +13,7 @@ WiFiManager wifi;
 extern ServerManager web;
 
 WiFiManager::WiFiManager() 
-    : sta_netif(nullptr), ap_netif(nullptr), sta_connected(false), ap_started(false) {
+    : sta_netif(nullptr), ap_netif(nullptr), sta_connected(false), ap_started(false), ip_wait_start_time(0) {
 }
 
 void WiFiManager::wifi_event_handler(void* arg, esp_event_base_t event_base,
@@ -51,6 +51,7 @@ void WiFiManager::wifi_event_handler(void* arg, esp_event_base_t event_base,
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
         manager->sta_connected = true;
+        manager->ip_wait_start_time = 0;  // Reset IP wait timer
         
         // Restart HTTP server to bind to new network interface
         ESP_LOGI(TAG, "Restarting HTTP server for STA interface...");
@@ -211,6 +212,7 @@ void WiFiManager::checkWiFiConnection() {
     static int64_t lastReconnectAttempt = 0;
     int64_t now = esp_timer_get_time() / 1000000; // Convert to seconds
     const int64_t RECONNECT_INTERVAL = 30; // Try to reconnect every 30 seconds
+    const int64_t IP_WAIT_TIMEOUT = 60; // Wait max 60 seconds for IP address
     
     if (!sta_connected) {
         // Check if we're currently trying to connect (to avoid interrupting connection process)
@@ -218,11 +220,30 @@ void WiFiManager::checkWiFiConnection() {
         esp_err_t status = esp_wifi_sta_get_ap_info(&ap_info);
         
         // If we're in the process of connecting (status == ESP_OK means associated but no IP yet)
-        // give it more time before trying to reconnect
         if (status == ESP_OK) {
-            ESP_LOGI(TAG, "WiFi association in progress, waiting for IP address...");
+            // Start timer on first detection of association
+            if (ip_wait_start_time == 0) {
+                ip_wait_start_time = now;
+                ESP_LOGI(TAG, "WiFi associated, waiting for IP address...");
+            }
+            
+            // Check if we've been waiting too long for IP
+            if (now - ip_wait_start_time > IP_WAIT_TIMEOUT) {
+                ESP_LOGW(TAG, "IP address timeout after %lld seconds. Forcing reconnect...", IP_WAIT_TIMEOUT);
+                ip_wait_start_time = 0;
+                esp_wifi_disconnect();
+                return;
+            }
+            
+            // Log every 5 seconds to reduce spam
+            if ((now - ip_wait_start_time) % 5 == 0) {
+                ESP_LOGI(TAG, "Still waiting for IP address... (%lld seconds)", now - ip_wait_start_time);
+            }
             return;
         }
+        
+        // Reset IP wait timer if not associated
+        ip_wait_start_time = 0;
         
         // Only attempt reconnection if enough time has passed
         if (now - lastReconnectAttempt < RECONNECT_INTERVAL) {

@@ -38,7 +38,8 @@ void MQTTManager::mqtt_event_handler(void *handler_args, esp_event_base_t base,
             break;
             
         case MQTT_EVENT_DATA: {
-            ESP_LOGI(TAG, "MQTT Data received - Topic: %.*s", event->topic_len, event->topic);
+            ESP_LOGI(TAG, "MQTT Data received - Topic: %.*s, Data: %.*s", 
+                     event->topic_len, event->topic, event->data_len, (char*)event->data);
             
             // LED Control Handler
             char topic[256];
@@ -47,44 +48,84 @@ void MQTTManager::mqtt_event_handler(void *handler_args, esp_event_base_t base,
             snprintf(topic, sizeof(topic), "%s/led/set", baseTopic);
             
             if (strncmp(event->topic, topic, event->topic_len) == 0) {
-                if (manager->ledCallback) {
-                    bool state = (strncmp((char*)event->data, "ON", event->data_len) == 0);
-                    manager->ledCallback(state);
+                // Check if it's simple text (ON/OFF) or JSON
+                char payload[256] = {0};
+                int copyLen = (event->data_len < sizeof(payload) - 1) ? event->data_len : sizeof(payload) - 1;
+                strncpy(payload, (char*)event->data, copyLen);
+                payload[copyLen] = '\0';
+                
+                bool isSimpleText = (strcmp(payload, "ON") == 0 || strcmp(payload, "OFF") == 0);
+                
+                if (isSimpleText) {
+                    // Handle simple ON/OFF command
+                    bool isOn = (strcmp(payload, "ON") == 0);
+                    ESP_LOGI(TAG, "LED simple command: %s", isOn ? "ON" : "OFF");
+                    if (manager->ledCallback) {
+                        manager->ledCallback(isOn);
+                    }
                     
-                    // Publish state back
+                    // Publish state back (JSON format for Home Assistant)
                     char stateTopic[256];
                     snprintf(stateTopic, sizeof(stateTopic), "%s/led/state", baseTopic);
-                    esp_mqtt_client_publish(manager->mqtt_client, stateTopic, 
-                                          state ? "ON" : "OFF", 0, 1, true);
-                }
-            }
-            
-            // RGB Color Handler
-            char rgbTopic[256];
-            snprintf(rgbTopic, sizeof(rgbTopic), "%s/led/rgb/set", baseTopic);
-            
-            if (strncmp(event->topic, rgbTopic, event->topic_len) == 0 && manager->ledColorCallback) {
-                // Parse RGB values (format: "r,g,b" e.g., "255,128,0")
-                char data[64];
-                int len = (event->data_len < sizeof(data) - 1) ? event->data_len : sizeof(data) - 1;
-                strncpy(data, (char*)event->data, len);
-                data[len] = '\0';
-                
-                int r, g, b;
-                if (sscanf(data, "%d,%d,%d", &r, &g, &b) == 3) {
-                    r = (r < 0) ? 0 : (r > 255) ? 255 : r;
-                    g = (g < 0) ? 0 : (g > 255) ? 255 : g;
-                    b = (b < 0) ? 0 : (b > 255) ? 255 : b;
                     
-                    ESP_LOGI(TAG, "RGB command: R=%d G=%d B=%d", r, g, b);
-                    manager->ledColorCallback(r, g, b);
+                    DynamicJsonDocument stateDoc(256);
+                    stateDoc["state"] = isOn ? "ON" : "OFF";
                     
-                    // Publish RGB state back
-                    char rgbStateTopic[256];
-                    snprintf(rgbStateTopic, sizeof(rgbStateTopic), "%s/led/rgb/state", baseTopic);
-                    char rgbState[32];
-                    snprintf(rgbState, sizeof(rgbState), "%d,%d,%d", r, g, b);
-                    esp_mqtt_client_publish(manager->mqtt_client, rgbStateTopic, rgbState, 0, 1, true);
+                    char statePayload[256];
+                    serializeJson(stateDoc, statePayload, sizeof(statePayload));
+                    esp_mqtt_client_publish(manager->mqtt_client, stateTopic, statePayload, 0, 1, true);
+                } else {
+                    // Try to parse as JSON
+                    DynamicJsonDocument doc(256);
+                    DeserializationError error = deserializeJson(doc, (char*)event->data, event->data_len);
+                    
+                    if (!error) {
+                        // Handle state (ON/OFF)
+                        if (doc.containsKey("state")) {
+                            const char* state = doc["state"];
+                            bool isOn = (strcmp(state, "ON") == 0);
+                            if (manager->ledCallback) {
+                                manager->ledCallback(isOn);
+                            }
+                        }
+                        
+                        // Handle RGB color
+                        if (doc.containsKey("color") && doc["color"].containsKey("r") && 
+                            doc["color"].containsKey("g") && doc["color"].containsKey("b")) {
+                            int r = doc["color"]["r"];
+                            int g = doc["color"]["g"];
+                            int b = doc["color"]["b"];
+                            
+                            r = (r < 0) ? 0 : (r > 255) ? 255 : r;
+                            g = (g < 0) ? 0 : (g > 255) ? 255 : g;
+                            b = (b < 0) ? 0 : (b > 255) ? 255 : b;
+                            
+                            ESP_LOGI(TAG, "MQTT RGB: R=%d G=%d B=%d", r, g, b);
+                            if (manager->ledColorCallback) {
+                                manager->ledColorCallback(r, g, b);
+                            }
+                        }
+                        
+                        // Publish state back (JSON format)
+                        char stateTopic[256];
+                        snprintf(stateTopic, sizeof(stateTopic), "%s/led/state", baseTopic);
+                        
+                        DynamicJsonDocument stateDoc(256);
+                        if (doc.containsKey("state")) {
+                            stateDoc["state"] = doc["state"];
+                        }
+                        if (doc.containsKey("color")) {
+                            stateDoc["color"]["r"] = doc["color"]["r"];
+                            stateDoc["color"]["g"] = doc["color"]["g"];
+                            stateDoc["color"]["b"] = doc["color"]["b"];
+                        }
+                        
+                        char statePayload[256];
+                        serializeJson(stateDoc, statePayload, sizeof(statePayload));
+                        esp_mqtt_client_publish(manager->mqtt_client, stateTopic, statePayload, 0, 1, true);
+                    } else {
+                        ESP_LOGW(TAG, "Failed to parse as JSON and not simple ON/OFF command");
+                    }
                 }
             }
             break;
@@ -133,6 +174,7 @@ void MQTTManager::begin() {
     mqtt_cfg.session.last_will.retain = true;
     
     mqtt_cfg.buffer.size = 2048;
+    mqtt_cfg.task.stack_size = 8192;  // Increase stack size for JSON serialization (default 4096)
     mqtt_cfg.network.reconnect_timeout_ms = 10000;  // Wait 10s between reconnect attempts
     mqtt_cfg.network.disable_auto_reconnect = false;
     
@@ -244,13 +286,8 @@ void MQTTManager::subscribeToCommands() {
     char baseTopic[128];
     getHomeAssistantBaseTopic(baseTopic, sizeof(baseTopic));
     
-    // Subscribe to LED control
+    // Subscribe to LED control (JSON format)
     snprintf(topic, sizeof(topic), "%s/led/set", baseTopic);
-    esp_mqtt_client_subscribe(mqtt_client, topic, 1);
-    ESP_LOGI(TAG, "Subscribed to: %s", topic);
-    
-    // Subscribe to RGB control
-    snprintf(topic, sizeof(topic), "%s/led/rgb/set", baseTopic);
     esp_mqtt_client_subscribe(mqtt_client, topic, 1);
     ESP_LOGI(TAG, "Subscribed to: %s", topic);
 }
@@ -259,6 +296,17 @@ void MQTTManager::publishAutoDiscovery() {
     if (!mqtt_client || !connected) return;
     
     ESP_LOGI(TAG, "Publishing Home Assistant Auto Discovery...");
+    
+    // Delete old switch and light discoveries (from previous versions)
+    char deviceId[32];
+    char oldSwitchTopic[256];
+    char oldLightTopic[256];
+    getDeviceId(deviceId, sizeof(deviceId));
+    getDiscoveryTopic("switch", "led", oldSwitchTopic, sizeof(oldSwitchTopic));
+    esp_mqtt_client_publish(mqtt_client, oldSwitchTopic, "", 0, 1, true);
+    getDiscoveryTopic("light", "led", oldLightTopic, sizeof(oldLightTopic));
+    esp_mqtt_client_publish(mqtt_client, oldLightTopic, "", 0, 1, true);
+    ESP_LOGI(TAG, "Removed old switch/light discovery");
     
     publishSwitchDiscovery();
     publishSensorDiscovery();
@@ -275,15 +323,16 @@ void MQTTManager::publishSwitchDiscovery() {
     
     getDeviceId(deviceId, sizeof(deviceId));
     getHomeAssistantBaseTopic(baseTopic, sizeof(baseTopic));
-    getDiscoveryTopic("light", "led", discoveryTopic, sizeof(discoveryTopic));
+    getDiscoveryTopic("light", "led_rgb", discoveryTopic, sizeof(discoveryTopic));
     
     // Use smaller buffer - simplified payload
     DynamicJsonDocument doc(768);
     
     char uniqueId[64];
-    snprintf(uniqueId, sizeof(uniqueId), "%s_led", deviceId);
+    snprintf(uniqueId, sizeof(uniqueId), "%s_led_rgb", deviceId);
     doc["uniq_id"] = uniqueId;
     doc["name"] = "LED";
+    doc["schema"] = "json";
     
     char stateTopic[256];
     snprintf(stateTopic, sizeof(stateTopic), "%s/led/state", baseTopic);
@@ -293,21 +342,9 @@ void MQTTManager::publishSwitchDiscovery() {
     snprintf(commandTopic, sizeof(commandTopic), "%s/led/set", baseTopic);
     doc["cmd_t"] = commandTopic;
     
-    // RGB support
-    char rgbStateTopic[256];
-    snprintf(rgbStateTopic, sizeof(rgbStateTopic), "%s/led/rgb/state", baseTopic);
-    doc["rgb_stat_t"] = rgbStateTopic;
-    
-    char rgbCommandTopic[256];
-    snprintf(rgbCommandTopic, sizeof(rgbCommandTopic), "%s/led/rgb/set", baseTopic);
-    doc["rgb_cmd_t"] = rgbCommandTopic;
-    
-    doc["pl_on"] = "ON";
-    doc["pl_off"] = "OFF";
-    doc["opt"] = false;
-    
-    JsonArray modes = doc.createNestedArray("sup_clrm");
-    modes.add("rgb");
+    // Supported color modes for JSON schema
+    JsonArray colorModes = doc.createNestedArray("sup_clrm");
+    colorModes.add("rgb");
     
     JsonObject dev = doc.createNestedObject("dev");
     dev["ids"][0] = deviceId;
@@ -342,6 +379,32 @@ void MQTTManager::publishDeviceState() {
     snprintf(statusTopic, sizeof(statusTopic), "%s/status", baseTopic);
     
     esp_mqtt_client_publish(mqtt_client, statusTopic, "online", 0, 1, true);
+}
+
+void MQTTManager::publishLEDState(bool isOn, uint8_t r, uint8_t g, uint8_t b) {
+    if (!mqtt_client || !connected) return;
+    
+    char stateTopic[256];
+    char baseTopic[128];
+    getHomeAssistantBaseTopic(baseTopic, sizeof(baseTopic));
+    snprintf(stateTopic, sizeof(stateTopic), "%s/led/state", baseTopic);
+    
+    DynamicJsonDocument doc(256);
+    doc["state"] = isOn ? "ON" : "OFF";
+    
+    if (isOn) {
+        doc["color_mode"] = "rgb";
+        JsonObject color = doc.createNestedObject("color");
+        color["r"] = r;
+        color["g"] = g;
+        color["b"] = b;
+    }
+    
+    char payload[256];
+    serializeJson(doc, payload, sizeof(payload));
+    
+    esp_mqtt_client_publish(mqtt_client, stateTopic, payload, 0, 1, true);
+    ESP_LOGI(TAG, "Published LED state: %s, RGB(%d,%d,%d)", isOn ? "ON" : "OFF", r, g, b);
 }
 
 void MQTTManager::publishFanSpeed(int pwmDuty) {

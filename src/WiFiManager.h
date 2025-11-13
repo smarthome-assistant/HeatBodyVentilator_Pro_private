@@ -25,5 +25,6 @@ private:
     esp_netif_t* ap_netif;
     bool sta_connected;
     bool ap_started;
+    int64_t ip_wait_start_time;  // Track when we started waiting for IP
 };
 extern WiFiManager wifi;

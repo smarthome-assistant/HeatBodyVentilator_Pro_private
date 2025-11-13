@@ -10,6 +10,14 @@ public:
     void setColor(uint8_t r, uint8_t g, uint8_t b);
     void off();
     
+    // Status abfragen
+    bool isOn() const { return led_is_on; }
+    void getColor(uint8_t* r, uint8_t* g, uint8_t* b) const {
+        *r = current_r;
+        *g = current_g;
+        *b = current_b;
+    }
+    
     // Kompatibilitäts-Helper für einfache Farben
     void setColorBlack() { setColor(0, 0, 0); }
     void setColorWhite() { setColor(255, 255, 255); }
@@ -19,4 +27,5 @@ public:
     
 private:
     uint8_t current_r, current_g, current_b;
+    bool led_is_on;
 };

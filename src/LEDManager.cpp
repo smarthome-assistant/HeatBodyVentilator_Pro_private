@@ -76,6 +76,7 @@ void LEDManager::begin() {
     current_r = 0;
     current_g = 0;
     current_b = 0;
+    led_is_on = false;
     ws2812_encode_rgb(0, 0, 0);
     
     // Transmit using copy encoder
@@ -98,6 +99,7 @@ void LEDManager::setColor(uint8_t r, uint8_t g, uint8_t b) {
     current_r = r;
     current_g = g;
     current_b = b;
+    led_is_on = (r > 0 || g > 0 || b > 0);  // LED is on if any color component is non-zero
     
     ws2812_encode_rgb(r, g, b);
     
@@ -118,6 +120,7 @@ void LEDManager::setColor(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 void LEDManager::off() {
+    led_is_on = false;
     setColor(0, 0, 0);
     ESP_LOGI(TAG, "LED turned OFF");
 }

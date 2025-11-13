@@ -77,11 +77,19 @@ extern "C" void app_main(void)
             led.off();
             ESP_LOGI(TAG, "LED turned OFF via MQTT");
         }
+        
+        // Publish current state back to MQTT
+        uint8_t r, g, b;
+        led.getColor(&r, &g, &b);
+        mqttManager.publishLEDState(led.isOn(), r, g, b);
     });
     
     mqttManager.setLEDColorCallback([](uint8_t r, uint8_t g, uint8_t b) {
         led.setColor(r, g, b);
         ESP_LOGI(TAG, "LED color changed via MQTT: R=%d G=%d B=%d", r, g, b);
+        
+        // Publish updated state back to MQTT
+        mqttManager.publishLEDState(led.isOn(), r, g, b);
     });
     
     mqttManager.begin();
