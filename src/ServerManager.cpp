@@ -177,6 +177,16 @@ void ServerManager::setupRoutes() {
     httpd_uri_t api_pwm_control = {.uri = "/api/pwm/control", .method = HTTP_POST, .handler = api_pwm_control_handler, .user_ctx = this};
     httpd_register_uri_handler(server, &api_pwm_control);
     
+    // OTA Update - TAR file (recommended) or separate files
+    httpd_uri_t api_ota_tar = {.uri = "/api/ota/upload", .method = HTTP_POST, .handler = api_ota_tar_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_ota_tar);
+    
+    httpd_uri_t api_ota_firmware = {.uri = "/api/ota/firmware", .method = HTTP_POST, .handler = api_ota_firmware_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_ota_firmware);
+    
+    httpd_uri_t api_ota_filesystem = {.uri = "/api/ota/filesystem", .method = HTTP_POST, .handler = api_ota_filesystem_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &api_ota_filesystem);
+    
     httpd_uri_t api_login = {.uri = "/api/login", .method = HTTP_POST, .handler = api_login_handler, .user_ctx = this};
     httpd_register_uri_handler(server, &api_login);
     
@@ -1907,6 +1917,204 @@ esp_err_t ServerManager::api_logout_handler(httpd_req_t *req) {
     httpd_resp_send(req, NULL, 0);
     
     return ESP_OK;
+}
+
+// OTA TAR Update Handler - uploads single .tar file
+esp_err_t ServerManager::api_ota_tar_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
+    ServerManager* self = (ServerManager*)req->user_ctx;
+    ESP_LOGI(TAG, "OTA TAR Upload started, content length: %d", req->content_len);
+    
+    if (req->content_len == 0 || req->content_len > 4 * 1024 * 1024) { // Max 4MB
+        ESP_LOGE(TAG, "Invalid content length: %d", req->content_len);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid file size (max 4MB)");
+        return ESP_FAIL;
+    }
+    
+    // Allocate buffer for TAR file
+    uint8_t* tarBuffer = (uint8_t*)malloc(req->content_len);
+    if (!tarBuffer) {
+        ESP_LOGE(TAG, "Failed to allocate memory for TAR upload");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+    
+    // Read entire TAR file
+    size_t received = 0;
+    while (received < req->content_len) {
+        int ret = httpd_req_recv(req, (char*)(tarBuffer + received), req->content_len - received);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            free(tarBuffer);
+            ESP_LOGE(TAG, "Failed to receive TAR data");
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Upload failed");
+            return ESP_FAIL;
+        }
+        received += ret;
+    }
+    
+    ESP_LOGI(TAG, "Received complete TAR file: %d bytes", received);
+    
+    // Process TAR update
+    bool success = self->otaManager.processTarUpdate(tarBuffer, received);
+    
+    free(tarBuffer);
+    
+    if (success) {
+        ESP_LOGI(TAG, "OTA Update successful, rebooting in 3 seconds...");
+        const char* response = "{\"status\":\"success\",\"message\":\"Update successful, rebooting...\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, response, strlen(response));
+        
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        esp_restart();
+        
+        return ESP_OK;
+    } else {
+        ESP_LOGE(TAG, "OTA Update failed: %s", self->otaManager.getLastError());
+        char errorMsg[512];
+        snprintf(errorMsg, sizeof(errorMsg), 
+                 "{\"status\":\"error\",\"message\":\"%s\"}", 
+                 self->otaManager.getLastError());
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, errorMsg, strlen(errorMsg));
+        return ESP_FAIL;
+    }
+}
+
+// OTA Firmware Update Handler
+esp_err_t ServerManager::api_ota_firmware_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
+    ServerManager* self = (ServerManager*)req->user_ctx;
+    ESP_LOGI(TAG, "OTA Firmware Upload started, content length: %d", req->content_len);
+    
+    if (req->content_len == 0 || req->content_len > 2 * 1024 * 1024) { // Max 2MB
+        ESP_LOGE(TAG, "Invalid content length: %d", req->content_len);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid file size");
+        return ESP_FAIL;
+    }
+    
+    // Allocate buffer for firmware
+    uint8_t* fwBuffer = (uint8_t*)malloc(req->content_len);
+    if (!fwBuffer) {
+        ESP_LOGE(TAG, "Failed to allocate memory for firmware upload");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+    
+    // Read entire file
+    size_t received = 0;
+    while (received < req->content_len) {
+        int ret = httpd_req_recv(req, (char*)(fwBuffer + received), req->content_len - received);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            free(fwBuffer);
+            ESP_LOGE(TAG, "Failed to receive firmware data");
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Upload failed");
+            return ESP_FAIL;
+        }
+        received += ret;
+    }
+    
+    ESP_LOGI(TAG, "Received complete firmware: %d bytes", received);
+    
+    // Flash firmware
+    bool success = self->otaManager.flashFirmwareDirect(fwBuffer, received);
+    
+    free(fwBuffer);
+    
+    if (success) {
+        ESP_LOGI(TAG, "Firmware Update successful, rebooting in 3 seconds...");
+        const char* response = "{\"status\":\"success\",\"message\":\"Firmware update successful, rebooting...\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, response, strlen(response));
+        
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        esp_restart();
+        
+        return ESP_OK;
+    } else {
+        ESP_LOGE(TAG, "Firmware Update failed: %s", self->otaManager.getLastError());
+        char errorMsg[512];
+        snprintf(errorMsg, sizeof(errorMsg), 
+                 "{\"status\":\"error\",\"message\":\"%s\"}", 
+                 self->otaManager.getLastError());
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, errorMsg, strlen(errorMsg));
+        return ESP_FAIL;
+    }
+}
+
+// OTA Filesystem Update Handler
+esp_err_t ServerManager::api_ota_filesystem_handler(httpd_req_t *req) {
+    REQUIRE_AUTH();
+    
+    ServerManager* self = (ServerManager*)req->user_ctx;
+    ESP_LOGI(TAG, "OTA Filesystem Upload started, content length: %d", req->content_len);
+    
+    if (req->content_len == 0 || req->content_len > 2 * 1024 * 1024) { // Max 2MB
+        ESP_LOGE(TAG, "Invalid content length: %d", req->content_len);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid file size");
+        return ESP_FAIL;
+    }
+    
+    // Allocate buffer for SPIFFS
+    uint8_t* fsBuffer = (uint8_t*)malloc(req->content_len);
+    if (!fsBuffer) {
+        ESP_LOGE(TAG, "Failed to allocate memory for filesystem upload");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+    
+    // Read entire file
+    size_t received = 0;
+    while (received < req->content_len) {
+        int ret = httpd_req_recv(req, (char*)(fsBuffer + received), req->content_len - received);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                continue;
+            }
+            free(fsBuffer);
+            ESP_LOGE(TAG, "Failed to receive filesystem data");
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Upload failed");
+            return ESP_FAIL;
+        }
+        received += ret;
+    }
+    
+    ESP_LOGI(TAG, "Received complete filesystem: %d bytes", received);
+    
+    // Flash SPIFFS
+    bool success = self->otaManager.flashSPIFFSDirect(fsBuffer, received);
+    
+    free(fsBuffer);
+    
+    if (success) {
+        ESP_LOGI(TAG, "Filesystem Update successful, rebooting in 3 seconds...");
+        const char* response = "{\"status\":\"success\",\"message\":\"Filesystem update successful, rebooting...\"}";
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, response, strlen(response));
+        
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        esp_restart();
+        
+        return ESP_OK;
+    } else {
+        ESP_LOGE(TAG, "Filesystem Update failed: %s", self->otaManager.getLastError());
+        char errorMsg[512];
+        snprintf(errorMsg, sizeof(errorMsg), 
+                 "{\"status\":\"error\",\"message\":\"%s\"}", 
+                 self->otaManager.getLastError());
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, errorMsg, strlen(errorMsg));
+        return ESP_FAIL;
+    }
 }
 
 

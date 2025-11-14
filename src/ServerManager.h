@@ -4,6 +4,7 @@
 #include "Config.h"
 #include "KMeterManager.h"
 #include "LEDManager.h"
+#include "OTAManager.h"
 #include "driver/ledc.h"
 
 class ServerManager {
@@ -27,6 +28,7 @@ private:
     httpd_handle_t server;
     KMeterManager kmeterManager;
     LEDManager* ledManager;
+    OTAManager otaManager;
     bool ledState;
     uint8_t ledColorR;
     uint8_t ledColorG;
@@ -74,6 +76,9 @@ private:
     static esp_err_t api_logout_handler(httpd_req_t *req);
     static esp_err_t api_pwm_control_handler(httpd_req_t *req);
     static esp_err_t api_pwm_status_handler(httpd_req_t *req);
+    static esp_err_t api_ota_tar_handler(httpd_req_t *req);
+    static esp_err_t api_ota_firmware_handler(httpd_req_t *req);
+    static esp_err_t api_ota_filesystem_handler(httpd_req_t *req);
     
     // Helper functions
     static bool check_auth(httpd_req_t *req);

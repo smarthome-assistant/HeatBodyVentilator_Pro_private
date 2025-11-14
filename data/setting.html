@@ -1140,15 +1140,18 @@
       
       <div id="firmware-upload-section">
         <div class="form-group">
-          <label class="form-label" for="firmwareFile">Firmware-Datei auswählen (.bin)</label>
-          <input type="file" id="firmwareFile" class="form-control" accept=".bin" required>
-          <small class="form-text text-muted">Nur .bin Dateien werden unterstützt</small>
+          <label class="form-label" for="firmwareFile">Update-Paket auswählen (.tar)</label>
+          <input type="file" id="firmwareFile" class="form-control" accept=".tar" required>
+          <small class="form-text text-muted">TAR-Archiv mit firmware.bin und spiffs.bin</small>
         </div>
         
         <div class="form-group">
           <div class="alert alert-warning" style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 12px; border-radius: 4px; margin: 10px 0;">
             <strong>⚠️ Warnung:</strong> Trennen Sie das Gerät während des Updates nicht von der Stromversorgung. 
             Ein unterbrochenes Update kann das Gerät unbrauchbar machen.
+          </div>
+          <div class="alert alert-info" style="background-color: #d1ecf1; border: 1px solid #bee5eb; padding: 12px; border-radius: 4px; margin: 10px 0;">
+            <strong>💡 Tipp:</strong> Erstellen Sie update.tar mit: <code>python build_ota_package.py</code>
           </div>
         </div>
         
@@ -2249,18 +2252,19 @@
       const fileInfo = document.getElementById('firmware-file-info');
       
       if (file) {
-        // Validate file type
-        if (!file.name.toLowerCase().endsWith('.bin')) {
-          showNotification('Nur .bin Dateien sind erlaubt', 'error');
+        // Validate file type - accept .tar
+        const fileName = file.name.toLowerCase();
+        if (!fileName.endsWith('.tar')) {
+          showNotification('Nur .tar Dateien sind erlaubt', 'error');
           e.target.value = '';
           uploadButton.disabled = true;
           fileInfo.style.display = 'none';
           return;
         }
         
-        // Validate file size (max 2MB for ESP32)
-        if (file.size > 2 * 1024 * 1024) {
-          showNotification('Datei ist zu groß. Maximum: 2MB', 'error');
+        // Validate file size (max 4MB)
+        if (file.size > 4 * 1024 * 1024) {
+          showNotification('Datei ist zu groß. Maximum: 4MB', 'error');
           e.target.value = '';
           uploadButton.disabled = true;
           fileInfo.style.display = 'none';
@@ -2316,20 +2320,34 @@
       
       xhr.addEventListener('load', function() {
         if (xhr.status === 200) {
-          const response = xhr.responseText;
-          if (response === 'OK') {
-            // Success
-            document.getElementById('firmware-progress-section').style.display = 'none';
-            document.getElementById('firmware-success-section').style.display = 'block';
-            
-            // Auto-close modal after success
-            setTimeout(() => {
-              closeFirmwareModal();
-              showNotification('Firmware-Update erfolgreich! Gerät wird neu gestartet...', 'success');
-            }, 3000);
-          } else {
-            // Error response from server
-            showFirmwareError('Server-Fehler: ' + response);
+          try {
+            const response = JSON.parse(xhr.responseText);
+            if (response.status === 'success') {
+              // Success
+              document.getElementById('firmware-progress-section').style.display = 'none';
+              document.getElementById('firmware-success-section').style.display = 'block';
+              
+              // Auto-close modal after success
+              setTimeout(() => {
+                closeFirmwareModal();
+                showNotification('Firmware-Update erfolgreich! Gerät wird neu gestartet...', 'success');
+              }, 3000);
+            } else {
+              // Error response from server
+              showFirmwareError('Server-Fehler: ' + response.message);
+            }
+          } catch(e) {
+            // Fallback for non-JSON response
+            if (xhr.responseText === 'OK') {
+              document.getElementById('firmware-progress-section').style.display = 'none';
+              document.getElementById('firmware-success-section').style.display = 'block';
+              setTimeout(() => {
+                closeFirmwareModal();
+                showNotification('Firmware-Update erfolgreich! Gerät wird neu gestartet...', 'success');
+              }, 3000);
+            } else {
+              showFirmwareError('Server-Fehler: ' + xhr.responseText);
+            }
           }
         } else {
           // HTTP error
@@ -2346,7 +2364,7 @@
       });
       
       xhr.timeout = 120000; // 2 minutes timeout
-      xhr.open('POST', '/api/firmware-update?token=' + getToken());
+      xhr.open('POST', '/api/ota/upload?token=' + getToken());
       xhr.send(formData);
     }
 
