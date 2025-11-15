@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 
 class OTAManager {
 public:
@@ -16,6 +17,13 @@ public:
      * @return true if successful
      */
     bool processTarUpdate(const uint8_t* tarData, size_t tarSize);
+    
+    /**
+     * Process TAR file from SPIFFS file path
+     * @param tarFilePath Path to TAR file in SPIFFS
+     * @return true if successful
+     */
+    bool processTarUpdateFromFile(const char* tarFilePath);
     
     /**
      * Flash firmware.bin directly
@@ -32,6 +40,17 @@ public:
      * @return true if successful
      */
     bool flashSPIFFSDirect(const uint8_t* data, size_t size);
+    
+    /**
+     * Flash firmware in streaming mode (callback-based)
+     * @param size Total size of firmware
+     * @param readCallback Callback function to read data chunks
+     * @param userData User data passed to callback
+     * @return true if successful
+     */
+    typedef size_t (*ReadCallback)(uint8_t* buffer, size_t size, void* userData);
+    bool flashFirmwareStreaming(size_t totalSize, ReadCallback readCallback, void* userData);
+    bool flashSPIFFSStreaming(size_t totalSize, ReadCallback readCallback, void* userData);
     
     /**
      * Get last error message
@@ -70,6 +89,7 @@ private:
     
     size_t parseOctal(const char* str, size_t len);
     bool extractAndFlashTar(const uint8_t* tarData, size_t tarSize);
+    bool extractAndFlashTarFromFile(FILE* tarFile, size_t tarSize);
     bool flashFirmware(const uint8_t* data, size_t size);
     bool flashSPIFFS(const uint8_t* data, size_t size);
     bool verifyPartition(const char* partitionLabel);

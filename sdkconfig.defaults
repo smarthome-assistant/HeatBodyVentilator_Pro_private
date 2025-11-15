@@ -8,3 +8,6 @@ CONFIG_ESP_HID_ENABLED=n
 
 # MQTT Configuration
 CONFIG_MQTT_TASK_STACK_SIZE=8192
+
+# System Event Task Stack Size (prevent overflow during WiFi events)
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096

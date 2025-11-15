@@ -53,9 +53,19 @@ void WiFiManager::wifi_event_handler(void* arg, esp_event_base_t event_base,
         manager->sta_connected = true;
         manager->ip_wait_start_time = 0;  // Reset IP wait timer
         
-        // Restart HTTP server to bind to new network interface
-        ESP_LOGI(TAG, "Restarting HTTP server for STA interface...");
-        web.restart();
+        // Restart HTTP server in separate task to avoid stack overflow in sys_evt
+        ESP_LOGI(TAG, "Scheduling HTTP server restart for STA interface...");
+        xTaskCreate(
+            [](void* param) {
+                web.restart();
+                vTaskDelete(NULL);
+            },
+            "http_restart",
+            4096,
+            NULL,
+            5,
+            NULL
+        );
     }
 }
 

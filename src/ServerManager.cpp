@@ -1919,49 +1919,243 @@ esp_err_t ServerManager::api_logout_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// OTA TAR Update Handler - uploads single .tar file
+// OTA TAR Update Handler - uploads single .tar file with streaming
 esp_err_t ServerManager::api_ota_tar_handler(httpd_req_t *req) {
     REQUIRE_AUTH();
     
     ServerManager* self = (ServerManager*)req->user_ctx;
     ESP_LOGI(TAG, "OTA TAR Upload started, content length: %d", req->content_len);
+    ESP_LOGI(TAG, "Free heap before upload: %d bytes", esp_get_free_heap_size());
     
-    if (req->content_len == 0 || req->content_len > 4 * 1024 * 1024) { // Max 4MB
+    if (req->content_len == 0 || req->content_len > 10 * 1024 * 1024) { // Max 10MB
         ESP_LOGE(TAG, "Invalid content length: %d", req->content_len);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid file size (max 4MB)");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid file size (max 10MB)");
         return ESP_FAIL;
     }
     
-    // Allocate buffer for TAR file
-    uint8_t* tarBuffer = (uint8_t*)malloc(req->content_len);
-    if (!tarBuffer) {
-        ESP_LOGE(TAG, "Failed to allocate memory for TAR upload");
+    // Process TAR directly from HTTP stream without saving to file
+    // This saves memory and SPIFFS space
+    
+    const size_t BUFFER_SIZE = 32 * 1024; // 32KB buffer
+    uint8_t* buffer = (uint8_t*)malloc(BUFFER_SIZE);
+    if (!buffer) {
+        ESP_LOGE(TAG, "Failed to allocate buffer");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
         return ESP_FAIL;
     }
     
-    // Read entire TAR file
-    size_t received = 0;
-    while (received < req->content_len) {
-        int ret = httpd_req_recv(req, (char*)(tarBuffer + received), req->content_len - received);
-        if (ret <= 0) {
-            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-                continue;
+    size_t totalReceived = 0;
+    size_t remaining = req->content_len;
+    bool firmwareFound = false;
+    bool spiffsFound = false;
+    bool success = true;
+    
+    typedef struct {
+        char name[100];
+        char mode[8];
+        char uid[8];
+        char gid[8];
+        char size[12];
+        char mtime[12];
+        char checksum[8];
+        char typeflag;
+        char linkname[100];
+        char magic[6];
+        char version[2];
+        char uname[32];
+        char gname[32];
+        char devmajor[8];
+        char devminor[8];
+        char prefix[155];
+        char padding[12];
+    } TarHeader;
+    
+    auto parseOctal = [](const char* str, size_t len) -> size_t {
+        size_t result = 0;
+        for (size_t i = 0; i < len && str[i] != '\0' && str[i] != ' '; i++) {
+            if (str[i] >= '0' && str[i] <= '7') {
+                result = result * 8 + (str[i] - '0');
             }
-            free(tarBuffer);
-            ESP_LOGE(TAG, "Failed to receive TAR data");
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Upload failed");
-            return ESP_FAIL;
         }
-        received += ret;
+        return result;
+    };
+    
+    while (remaining > 0 && success) {
+        // Read TAR header (512 bytes)
+        if (remaining < 512) break;
+        
+        TarHeader header;
+        int ret = httpd_req_recv(req, (char*)&header, 512);
+        if (ret != 512) {
+            ESP_LOGE(TAG, "Failed to read TAR header");
+            success = false;
+            break;
+        }
+        totalReceived += 512;
+        remaining -= 512;
+        
+        // Check for end of archive (zero block)
+        bool allZero = true;
+        uint8_t* headerBytes = (uint8_t*)&header;
+        for (size_t i = 0; i < 512; i++) {
+            if (headerBytes[i] != 0) {
+                allZero = false;
+                break;
+            }
+        }
+        if (allZero) {
+            ESP_LOGI(TAG, "Reached end of TAR archive");
+            break;
+        }
+        
+        // Verify TAR magic
+        if (strncmp(header.magic, "ustar", 5) != 0) {
+            ESP_LOGW(TAG, "Invalid TAR magic, skipping");
+            // Skip this block and continue
+            continue;
+        }
+        
+        // Parse file size
+        size_t fileSize = parseOctal(header.size, 12);
+        ESP_LOGI(TAG, "Found file: %s (%u bytes)", header.name, fileSize);
+        
+        // Calculate padded size (512-byte aligned)
+        size_t paddedSize = (fileSize + 511) & ~511;
+        
+        if (header.typeflag == '0' || header.typeflag == '\0') {
+            // Regular file
+            if (strcmp(header.name, "firmware.bin") == 0) {
+                ESP_LOGI(TAG, "Processing firmware.bin (%u bytes)...", fileSize);
+                
+                // Stream firmware directly to flash without loading into RAM
+                struct StreamContext {
+                    httpd_req_t* req;
+                    size_t remaining;
+                    size_t paddedSize;
+                };
+                
+                StreamContext ctx;
+                ctx.req = req;
+                ctx.remaining = fileSize;
+                ctx.paddedSize = paddedSize;
+                
+                auto readFirmware = [](uint8_t* buffer, size_t size, void* userData) -> size_t {
+                    StreamContext* ctx = (StreamContext*)userData;
+                    if (ctx->remaining == 0) return 0;
+                    
+                    size_t toRead = (size > ctx->remaining) ? ctx->remaining : size;
+                    int ret = httpd_req_recv(ctx->req, (char*)buffer, toRead);
+                    if (ret <= 0) return 0;
+                    
+                    ctx->remaining -= ret;
+                    return ret;
+                };
+                
+                if (self->otaManager.flashFirmwareStreaming(fileSize, readFirmware, &ctx)) {
+                    firmwareFound = true;
+                    ESP_LOGI(TAG, "Firmware flashed successfully");
+                    
+                    // Skip padding if any
+                    size_t padding = paddedSize - fileSize;
+                    if (padding > 0 && remaining >= padding) {
+                        int ret = httpd_req_recv(req, (char*)buffer, padding);
+                        if (ret > 0) {
+                            totalReceived += ret;
+                            remaining -= ret;
+                        }
+                    }
+                    // Update counters for data already read
+                    totalReceived += fileSize - ctx.remaining;
+                    remaining -= (fileSize - ctx.remaining);
+                } else {
+                    ESP_LOGE(TAG, "Firmware flash failed");
+                    success = false;
+                }
+                
+            } else if (strcmp(header.name, "spiffs.bin") == 0) {
+                ESP_LOGI(TAG, "Processing spiffs.bin (%u bytes)...", fileSize);
+                
+                // Stream SPIFFS directly to flash without loading into RAM
+                struct StreamContext {
+                    httpd_req_t* req;
+                    size_t remaining;
+                    size_t paddedSize;
+                };
+                
+                StreamContext ctx;
+                ctx.req = req;
+                ctx.remaining = fileSize;
+                ctx.paddedSize = paddedSize;
+                
+                auto readSPIFFS = [](uint8_t* buffer, size_t size, void* userData) -> size_t {
+                    StreamContext* ctx = (StreamContext*)userData;
+                    if (ctx->remaining == 0) return 0;
+                    
+                    size_t toRead = (size > ctx->remaining) ? ctx->remaining : size;
+                    int ret = httpd_req_recv(ctx->req, (char*)buffer, toRead);
+                    if (ret <= 0) return 0;
+                    
+                    ctx->remaining -= ret;
+                    return ret;
+                };
+                
+                if (self->otaManager.flashSPIFFSStreaming(fileSize, readSPIFFS, &ctx)) {
+                    spiffsFound = true;
+                    ESP_LOGI(TAG, "SPIFFS flashed successfully");
+                    
+                    // Skip padding if any
+                    size_t padding = paddedSize - fileSize;
+                    if (padding > 0 && remaining >= padding) {
+                        int ret = httpd_req_recv(req, (char*)buffer, padding);
+                        if (ret > 0) {
+                            totalReceived += ret;
+                            remaining -= ret;
+                        }
+                    }
+                    // Update counters for data already read
+                    totalReceived += fileSize - ctx.remaining;
+                    remaining -= (fileSize - ctx.remaining);
+                } else {
+                    ESP_LOGE(TAG, "SPIFFS flash failed");
+                    success = false;
+                }
+                
+            } else {
+                // Skip unknown file
+                ESP_LOGI(TAG, "Skipping file: %s", header.name);
+                size_t toSkip = paddedSize;
+                while (toSkip > 0 && remaining > 0) {
+                    size_t chunkSize = (toSkip > BUFFER_SIZE) ? BUFFER_SIZE : toSkip;
+                    ret = httpd_req_recv(req, (char*)buffer, chunkSize);
+                    if (ret <= 0) break;
+                    toSkip -= ret;
+                    totalReceived += ret;
+                    remaining -= ret;
+                }
+            }
+        } else {
+            // Skip non-regular files
+            size_t toSkip = paddedSize;
+            while (toSkip > 0 && remaining > 0) {
+                size_t chunkSize = (toSkip > BUFFER_SIZE) ? BUFFER_SIZE : toSkip;
+                ret = httpd_req_recv(req, (char*)buffer, chunkSize);
+                if (ret <= 0) break;
+                toSkip -= ret;
+                totalReceived += ret;
+                remaining -= ret;
+            }
+        }
+        
+        if (!success) break;
     }
     
-    ESP_LOGI(TAG, "Received complete TAR file: %d bytes", received);
+    free(buffer);
     
-    // Process TAR update
-    bool success = self->otaManager.processTarUpdate(tarBuffer, received);
-    
-    free(tarBuffer);
+    if (!firmwareFound && !spiffsFound) {
+        ESP_LOGE(TAG, "No firmware.bin or spiffs.bin found in TAR");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid TAR content");
+        return ESP_FAIL;
+    }
     
     if (success) {
         ESP_LOGI(TAG, "OTA Update successful, rebooting in 3 seconds...");
@@ -1974,13 +2168,8 @@ esp_err_t ServerManager::api_ota_tar_handler(httpd_req_t *req) {
         
         return ESP_OK;
     } else {
-        ESP_LOGE(TAG, "OTA Update failed: %s", self->otaManager.getLastError());
-        char errorMsg[512];
-        snprintf(errorMsg, sizeof(errorMsg), 
-                 "{\"status\":\"error\",\"message\":\"%s\"}", 
-                 self->otaManager.getLastError());
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, errorMsg, strlen(errorMsg));
+        ESP_LOGE(TAG, "OTA Update failed");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Update failed");
         return ESP_FAIL;
     }
 }
