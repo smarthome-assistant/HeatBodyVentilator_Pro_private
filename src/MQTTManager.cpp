@@ -29,6 +29,7 @@ void MQTTManager::mqtt_event_handler(void *handler_args, esp_event_base_t base,
             manager->subscribeToCommands();
             manager->publishAutoDiscovery();
             manager->publishDeviceState();
+            manager->publishFanControlState();
             break;
             
         case MQTT_EVENT_DISCONNECTED:
@@ -128,6 +129,59 @@ void MQTTManager::mqtt_event_handler(void *handler_args, esp_event_base_t base,
                     }
                 }
             }
+            
+            // Fan Mode Control Handler
+            snprintf(topic, sizeof(topic), "%s/fan/mode/set", baseTopic);
+            if (strncmp(event->topic, topic, event->topic_len) == 0) {
+                char payload[128] = {0};
+                int copyLen = (event->data_len < sizeof(payload) - 1) ? event->data_len : sizeof(payload) - 1;
+                strncpy(payload, (char*)event->data, copyLen);
+                payload[copyLen] = '\0';
+                
+                bool isManual = (strstr(payload, "Manuell") != NULL);
+                Config::saveManualPWMMode(isManual);
+                ESP_LOGI(TAG, "Fan mode changed to: %s", isManual ? "Manual" : "Auto");
+                
+                // Publish state back
+                manager->publishFanControlState();
+            }
+            
+            // Temperature Start Control Handler
+            snprintf(topic, sizeof(topic), "%s/fan/temp_start/set", baseTopic);
+            if (strncmp(event->topic, topic, event->topic_len) == 0) {
+                char payload[16] = {0};
+                int copyLen = (event->data_len < sizeof(payload) - 1) ? event->data_len : sizeof(payload) - 1;
+                strncpy(payload, (char*)event->data, copyLen);
+                payload[copyLen] = '\0';
+                
+                float tempStart = atof(payload);
+                if (tempStart >= 0 && tempStart <= 100) {
+                    Config::saveTempMapping(tempStart, Config::TEMP_MAX);
+                    ESP_LOGI(TAG, "Start temperature changed to: %.0f°C", tempStart);
+                    
+                    // Publish state back
+                    manager->publishFanControlState();
+                }
+            }
+            
+            // Temperature Max Control Handler
+            snprintf(topic, sizeof(topic), "%s/fan/temp_max/set", baseTopic);
+            if (strncmp(event->topic, topic, event->topic_len) == 0) {
+                char payload[16] = {0};
+                int copyLen = (event->data_len < sizeof(payload) - 1) ? event->data_len : sizeof(payload) - 1;
+                strncpy(payload, (char*)event->data, copyLen);
+                payload[copyLen] = '\0';
+                
+                float tempMax = atof(payload);
+                if (tempMax > Config::TEMP_START && tempMax <= 150) {
+                    Config::saveTempMapping(Config::TEMP_START, tempMax);
+                    ESP_LOGI(TAG, "Max temperature changed to: %.0f°C", tempMax);
+                    
+                    // Publish state back
+                    manager->publishFanControlState();
+                }
+            }
+            
             break;
         }
             
@@ -290,6 +344,21 @@ void MQTTManager::subscribeToCommands() {
     snprintf(topic, sizeof(topic), "%s/led/set", baseTopic);
     esp_mqtt_client_subscribe(mqtt_client, topic, 1);
     ESP_LOGI(TAG, "Subscribed to: %s", topic);
+    
+    // Subscribe to Fan Mode control
+    snprintf(topic, sizeof(topic), "%s/fan/mode/set", baseTopic);
+    esp_mqtt_client_subscribe(mqtt_client, topic, 1);
+    ESP_LOGI(TAG, "Subscribed to: %s", topic);
+    
+    // Subscribe to Temperature Start control
+    snprintf(topic, sizeof(topic), "%s/fan/temp_start/set", baseTopic);
+    esp_mqtt_client_subscribe(mqtt_client, topic, 1);
+    ESP_LOGI(TAG, "Subscribed to: %s", topic);
+    
+    // Subscribe to Temperature Max control
+    snprintf(topic, sizeof(topic), "%s/fan/temp_max/set", baseTopic);
+    esp_mqtt_client_subscribe(mqtt_client, topic, 1);
+    ESP_LOGI(TAG, "Subscribed to: %s", topic);
 }
 
 void MQTTManager::publishAutoDiscovery() {
@@ -310,6 +379,7 @@ void MQTTManager::publishAutoDiscovery() {
     
     publishSwitchDiscovery();
     publishSensorDiscovery();
+    publishControlDiscovery();
     publishButtonDiscovery();
     
     autoDiscoveryPublished = true;
@@ -361,13 +431,211 @@ void MQTTManager::publishSwitchDiscovery() {
 }
 
 void MQTTManager::publishSensorDiscovery() {
-    // TODO: Publish temperature and other sensor discoveries
-    ESP_LOGI(TAG, "Sensor discovery (placeholder)");
+    char deviceId[32];
+    char baseTopic[128];
+    
+    getDeviceId(deviceId, sizeof(deviceId));
+    getHomeAssistantBaseTopic(baseTopic, sizeof(baseTopic));
+    
+    // 1. Temperature Sensor Discovery
+    {
+        char discoveryTopic[256];
+        getDiscoveryTopic("sensor", "temperature", discoveryTopic, sizeof(discoveryTopic));
+        
+        DynamicJsonDocument doc(512);
+        
+        char uniqueId[64];
+        snprintf(uniqueId, sizeof(uniqueId), "%s_temperature", deviceId);
+        doc["uniq_id"] = uniqueId;
+        doc["name"] = "Temperatur";
+        doc["dev_cla"] = "temperature";
+        doc["unit_of_meas"] = "°C";
+        doc["stat_cla"] = "measurement";
+        
+        char stateTopic[256];
+        snprintf(stateTopic, sizeof(stateTopic), "%s/sensor/temperature", baseTopic);
+        doc["stat_t"] = stateTopic;
+        doc["val_tpl"] = "{{ value_json.temperature }}";
+        
+        JsonObject dev = doc.createNestedObject("dev");
+        dev["ids"][0] = deviceId;
+        dev["name"] = Config::DEVICE_NAME;
+        dev["mdl"] = "M5Stack Atom";
+        dev["mf"] = "SmartHome-Assistant.info";
+        
+        char payload[512];
+        serializeJson(doc, payload, sizeof(payload));
+        
+        esp_mqtt_client_publish(mqtt_client, discoveryTopic, payload, 0, 1, true);
+        ESP_LOGI(TAG, "Published Temperature sensor discovery");
+    }
+    
+    // 2. Fan Speed Sensor Discovery (PWM Duty Cycle as percentage)
+    {
+        char discoveryTopic[256];
+        getDiscoveryTopic("sensor", "fan", discoveryTopic, sizeof(discoveryTopic));
+        
+        DynamicJsonDocument doc(512);
+        
+        char uniqueId[64];
+        snprintf(uniqueId, sizeof(uniqueId), "%s_fan", deviceId);
+        doc["uniq_id"] = uniqueId;
+        doc["name"] = "Lüfter";
+        doc["icon"] = "mdi:fan";
+        doc["unit_of_meas"] = "%";
+        doc["stat_cla"] = "measurement";
+        
+        char stateTopic[256];
+        snprintf(stateTopic, sizeof(stateTopic), "%s/sensor/fan", baseTopic);
+        doc["stat_t"] = stateTopic;
+        doc["val_tpl"] = "{{ value_json.speed }}";
+        
+        JsonObject dev = doc.createNestedObject("dev");
+        dev["ids"][0] = deviceId;
+        dev["name"] = Config::DEVICE_NAME;
+        dev["mdl"] = "M5Stack Atom";
+        dev["mf"] = "SmartHome-Assistant.info";
+        
+        char payload[512];
+        serializeJson(doc, payload, sizeof(payload));
+        
+        esp_mqtt_client_publish(mqtt_client, discoveryTopic, payload, 0, 1, true);
+        ESP_LOGI(TAG, "Published Fan sensor discovery");
+    }
+    
+    ESP_LOGI(TAG, "Sensor discovery completed");
+}
+
+void MQTTManager::publishControlDiscovery() {
+    char deviceId[32];
+    char baseTopic[128];
+    
+    getDeviceId(deviceId, sizeof(deviceId));
+    getHomeAssistantBaseTopic(baseTopic, sizeof(baseTopic));
+    
+    // 1. Select for Fan Mode (Auto/Manual)
+    {
+        char discoveryTopic[256];
+        getDiscoveryTopic("select", "fan_mode", discoveryTopic, sizeof(discoveryTopic));
+        
+        DynamicJsonDocument doc(768);
+        
+        char uniqueId[64];
+        snprintf(uniqueId, sizeof(uniqueId), "%s_fan_mode", deviceId);
+        doc["uniq_id"] = uniqueId;
+        doc["name"] = "Lüfter Status";
+        doc["icon"] = "mdi:fan-auto";
+        
+        char stateTopic[256];
+        snprintf(stateTopic, sizeof(stateTopic), "%s/fan/mode/state", baseTopic);
+        doc["stat_t"] = stateTopic;
+        
+        char commandTopic[256];
+        snprintf(commandTopic, sizeof(commandTopic), "%s/fan/mode/set", baseTopic);
+        doc["cmd_t"] = commandTopic;
+        
+        JsonArray options = doc.createNestedArray("options");
+        options.add("Automatische temperaturbasierte Steuerung");
+        options.add("Manueller Modus (PWM-Frequenz, Tastverhältnis)");
+        
+        JsonObject dev = doc.createNestedObject("dev");
+        dev["ids"][0] = deviceId;
+        dev["name"] = Config::DEVICE_NAME;
+        dev["mdl"] = "M5Stack Atom";
+        dev["mf"] = "SmartHome-Assistant.info";
+        
+        char payload[768];
+        serializeJson(doc, payload, sizeof(payload));
+        
+        esp_mqtt_client_publish(mqtt_client, discoveryTopic, payload, 0, 1, true);
+        ESP_LOGI(TAG, "Published Fan Mode select discovery");
+    }
+    
+    // 2. Number for Start Temperature
+    {
+        char discoveryTopic[256];
+        getDiscoveryTopic("number", "temp_start", discoveryTopic, sizeof(discoveryTopic));
+        
+        DynamicJsonDocument doc(768);
+        
+        char uniqueId[64];
+        snprintf(uniqueId, sizeof(uniqueId), "%s_temp_start", deviceId);
+        doc["uniq_id"] = uniqueId;
+        doc["name"] = "Starttemperatur";
+        doc["icon"] = "mdi:thermometer-low";
+        doc["unit_of_meas"] = "°C";
+        doc["min"] = 0;
+        doc["max"] = 100;
+        doc["step"] = 1;
+        doc["mode"] = "box";
+        
+        char stateTopic[256];
+        snprintf(stateTopic, sizeof(stateTopic), "%s/fan/temp_start/state", baseTopic);
+        doc["stat_t"] = stateTopic;
+        
+        char commandTopic[256];
+        snprintf(commandTopic, sizeof(commandTopic), "%s/fan/temp_start/set", baseTopic);
+        doc["cmd_t"] = commandTopic;
+        
+        JsonObject dev = doc.createNestedObject("dev");
+        dev["ids"][0] = deviceId;
+        dev["name"] = Config::DEVICE_NAME;
+        dev["mdl"] = "M5Stack Atom";
+        dev["mf"] = "SmartHome-Assistant.info";
+        
+        char payload[768];
+        serializeJson(doc, payload, sizeof(payload));
+        
+        esp_mqtt_client_publish(mqtt_client, discoveryTopic, payload, 0, 1, true);
+        ESP_LOGI(TAG, "Published Start Temperature number discovery");
+    }
+    
+    // 3. Number for Max Temperature
+    {
+        char discoveryTopic[256];
+        getDiscoveryTopic("number", "temp_max", discoveryTopic, sizeof(discoveryTopic));
+        
+        DynamicJsonDocument doc(768);
+        
+        char uniqueId[64];
+        snprintf(uniqueId, sizeof(uniqueId), "%s_temp_max", deviceId);
+        doc["uniq_id"] = uniqueId;
+        doc["name"] = "Maximaltemperatur";
+        doc["icon"] = "mdi:thermometer-high";
+        doc["unit_of_meas"] = "°C";
+        doc["min"] = 0;
+        doc["max"] = 150;
+        doc["step"] = 1;
+        doc["mode"] = "box";
+        
+        char stateTopic[256];
+        snprintf(stateTopic, sizeof(stateTopic), "%s/fan/temp_max/state", baseTopic);
+        doc["stat_t"] = stateTopic;
+        
+        char commandTopic[256];
+        snprintf(commandTopic, sizeof(commandTopic), "%s/fan/temp_max/set", baseTopic);
+        doc["cmd_t"] = commandTopic;
+        
+        JsonObject dev = doc.createNestedObject("dev");
+        dev["ids"][0] = deviceId;
+        dev["name"] = Config::DEVICE_NAME;
+        dev["mdl"] = "M5Stack Atom";
+        dev["mf"] = "SmartHome-Assistant.info";
+        
+        char payload[768];
+        serializeJson(doc, payload, sizeof(payload));
+        
+        esp_mqtt_client_publish(mqtt_client, discoveryTopic, payload, 0, 1, true);
+        ESP_LOGI(TAG, "Published Max Temperature number discovery");
+    }
+    
+    ESP_LOGI(TAG, "Control discovery completed");
 }
 
 void MQTTManager::publishButtonDiscovery() {
-    // TODO: Publish button discoveries if needed
-    ESP_LOGI(TAG, "Button discovery (placeholder)");
+    // No physical buttons on M5Stack Atom in this application
+    // This can be implemented later if needed for virtual buttons or triggers
+    ESP_LOGI(TAG, "Button discovery skipped (no buttons configured)");
 }
 
 void MQTTManager::publishDeviceState() {
@@ -413,10 +681,17 @@ void MQTTManager::publishFanSpeed(int pwmDuty) {
     char topic[256];
     char baseTopic[128];
     getBaseTopic(baseTopic, sizeof(baseTopic));
-    snprintf(topic, sizeof(topic), "%s/fan/speed", baseTopic);
+    snprintf(topic, sizeof(topic), "%s/sensor/fan", baseTopic);
     
-    char payload[32];
-    snprintf(payload, sizeof(payload), "%d", pwmDuty);
+    // Calculate percentage (pwmDuty is 0-255)
+    int percentage = (pwmDuty * 100) / 255;
+    
+    // Send as JSON for Home Assistant
+    DynamicJsonDocument doc(128);
+    doc["speed"] = percentage;
+    
+    char payload[128];
+    serializeJson(doc, payload, sizeof(payload));
     
     esp_mqtt_client_publish(mqtt_client, topic, payload, 0, 0, false);
 }
@@ -427,12 +702,45 @@ void MQTTManager::publishTemperature(float tempCelsius) {
     char topic[256];
     char baseTopic[128];
     getBaseTopic(baseTopic, sizeof(baseTopic));
-    snprintf(topic, sizeof(topic), "%s/temperature", baseTopic);
+    snprintf(topic, sizeof(topic), "%s/sensor/temperature", baseTopic);
     
-    char payload[32];
-    snprintf(payload, sizeof(payload), "%.2f", tempCelsius);
+    // Send as JSON for Home Assistant
+    DynamicJsonDocument doc(128);
+    doc["temperature"] = ((int)(tempCelsius * 10 + 0.5)) / 10.0; // Round to 1 decimal
+    
+    char payload[128];
+    serializeJson(doc, payload, sizeof(payload));
     
     esp_mqtt_client_publish(mqtt_client, topic, payload, 0, 0, false);
+}
+
+void MQTTManager::publishFanControlState() {
+    if (!mqtt_client || !connected) return;
+    
+    char topic[256];
+    char baseTopic[128];
+    getBaseTopic(baseTopic, sizeof(baseTopic));
+    
+    // Publish Fan Mode
+    snprintf(topic, sizeof(topic), "%s/fan/mode/state", baseTopic);
+    const char* mode = Config::MANUAL_PWM_MODE ? 
+        "Manueller Modus (PWM-Frequenz, Tastverhältnis)" : 
+        "Automatische temperaturbasierte Steuerung";
+    esp_mqtt_client_publish(mqtt_client, topic, mode, 0, 1, true);
+    
+    // Publish Start Temperature
+    snprintf(topic, sizeof(topic), "%s/fan/temp_start/state", baseTopic);
+    char tempStart[16];
+    snprintf(tempStart, sizeof(tempStart), "%.0f", Config::TEMP_START);
+    esp_mqtt_client_publish(mqtt_client, topic, tempStart, 0, 1, true);
+    
+    // Publish Max Temperature
+    snprintf(topic, sizeof(topic), "%s/fan/temp_max/state", baseTopic);
+    char tempMax[16];
+    snprintf(tempMax, sizeof(tempMax), "%.0f", Config::TEMP_MAX);
+    esp_mqtt_client_publish(mqtt_client, topic, tempMax, 0, 1, true);
+    
+    ESP_LOGI(TAG, "Published Fan Control State");
 }
 
 void MQTTManager::publishSensorData(const char* sensor, float value, const char* unit) {

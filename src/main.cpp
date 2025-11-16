@@ -13,6 +13,7 @@
 #include "ServerManager.h"
 #include "LEDManager.h"
 #include "MQTTManager.h"
+#include "driver/ledc.h"
 // #include "BluetoothProxyManager.h"  // TEMPORÄR DEAKTIVIERT
 
 static const char *TAG = "MAIN";
@@ -103,6 +104,9 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "System vollständig initialisiert!");
     
     // Main Loop
+    static int counter = 0;
+    static int sensorPublishCounter = 0;
+    
     while (1) {
         // WiFi Connection Check
         wifi.checkWiFiConnection();
@@ -114,13 +118,30 @@ extern "C" void app_main(void)
         web.updateSensors();
         web.updateAutoPWM();
         
+        // Publish sensor data to MQTT every 10 seconds (100 * 100ms)
+        if (++sensorPublishCounter >= 100) {
+            sensorPublishCounter = 0;
+            
+            if (mqttManager.isConnected()) {
+                // Get current temperature
+                float temp = web.getKMeterManager()->getTemperatureCelsius();
+                if (temp > 0) {
+                    mqttManager.publishTemperature(temp);
+                }
+                
+                // Get current fan speed (PWM duty cycle)
+                // Note: This is read directly from the hardware
+                uint32_t duty = ledc_get_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+                mqttManager.publishFanSpeed(duty);
+            }
+        }
+        
         // Bluetooth Loop TEMPORÄR DEAKTIVIERT
         // if (Config::BT_PROXY_ENABLED) {
         //     btProxy.loop();
         // }
         
         // Heartbeat Log
-        static int counter = 0;
         if (++counter % 100 == 0) {
             ESP_LOGI(TAG, "Heartbeat... System läuft");
         }

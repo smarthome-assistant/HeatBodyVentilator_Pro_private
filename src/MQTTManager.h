@@ -19,6 +19,7 @@ public:
     
     void publishFanSpeed(int pwmDuty);
     void publishTemperature(float tempCelsius);
+    void publishFanControlState();
     
     void publishSensorData(const char* sensor, float value, const char* unit = "");
     void setLEDCallback(void (*callback)(bool state));
@@ -37,6 +38,7 @@ private:
     void publishDeviceInfo();
     void publishSwitchDiscovery();
     void publishSensorDiscovery();
+    void publishControlDiscovery();
     void publishButtonDiscovery();
     void subscribeToCommands();
     

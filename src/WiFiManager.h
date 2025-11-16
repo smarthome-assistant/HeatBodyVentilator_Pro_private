@@ -12,6 +12,8 @@ public:
     void beginSTA(const char* ssid, const char* pass);
     void beginAutoSTA();
     bool isConnected();
+    void disconnect();
+    void clearCredentials();
     void checkWiFiConnection();
     void getLocalIP(char* ipStr, size_t maxLen);
     void getAPIP(char* ipStr, size_t maxLen);

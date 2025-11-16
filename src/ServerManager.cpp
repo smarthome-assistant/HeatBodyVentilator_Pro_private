@@ -284,18 +284,95 @@ static esp_err_t serve_spiffs_file(httpd_req_t *req, const char* filepath, const
     
     httpd_resp_set_type(req, content_type);
     
-    char buffer[512];
-    size_t read_bytes;
-    while ((read_bytes = fread(buffer, 1, sizeof(buffer), f)) > 0) {
-        if (httpd_resp_send_chunk(req, buffer, read_bytes) != ESP_OK) {
-            fclose(f);
-            return ESP_FAIL;
-        }
-    }
+    // Check if this is an HTML file that needs placeholder replacement
+    bool needsReplacement = (strstr(content_type, "text/html") != NULL);
     
-    fclose(f);
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
+    if (needsReplacement) {
+        // Process file in streaming mode with on-the-fly replacement
+        const size_t CHUNK_SIZE = 512;
+        char buffer[CHUNK_SIZE];
+        char output[CHUNK_SIZE + 64]; // Extra space for device name
+        const char* placeholder = "%DEVICE_NAME%";
+        const size_t placeholder_len = strlen(placeholder);
+        const size_t device_name_len = strlen(Config::DEVICE_NAME);
+        
+        char carry_over[64] = {0}; // Buffer for partial placeholder matches across chunks
+        size_t carry_len = 0;
+        
+        while (!feof(f)) {
+            size_t read_bytes = fread(buffer, 1, CHUNK_SIZE, f);
+            if (read_bytes == 0) break;
+            
+            // Combine carry-over from previous chunk with current chunk
+            char combined[CHUNK_SIZE + 64];
+            size_t combined_len = 0;
+            
+            if (carry_len > 0) {
+                memcpy(combined, carry_over, carry_len);
+                combined_len = carry_len;
+                carry_len = 0;
+            }
+            
+            memcpy(combined + combined_len, buffer, read_bytes);
+            combined_len += read_bytes;
+            
+            // Process combined buffer and look for placeholder
+            size_t out_len = 0;
+            size_t i = 0;
+            
+            while (i < combined_len) {
+                // Check if we might have a partial match at the end
+                if (i + placeholder_len > combined_len && !feof(f)) {
+                    // Save remainder for next iteration
+                    carry_len = combined_len - i;
+                    memcpy(carry_over, combined + i, carry_len);
+                    break;
+                }
+                
+                // Check for placeholder
+                if (i + placeholder_len <= combined_len && 
+                    strncmp(combined + i, placeholder, placeholder_len) == 0) {
+                    // Replace with device name
+                    memcpy(output + out_len, Config::DEVICE_NAME, device_name_len);
+                    out_len += device_name_len;
+                    i += placeholder_len;
+                } else {
+                    output[out_len++] = combined[i++];
+                }
+            }
+            
+            // Send this chunk
+            if (out_len > 0) {
+                if (httpd_resp_send_chunk(req, output, out_len) != ESP_OK) {
+                    fclose(f);
+                    return ESP_FAIL;
+                }
+            }
+        }
+        
+        // Send any remaining carry-over
+        if (carry_len > 0) {
+            httpd_resp_send_chunk(req, carry_over, carry_len);
+        }
+        
+        fclose(f);
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
+    } else {
+        // Send non-HTML files as-is
+        char buffer[512];
+        size_t read_bytes;
+        while ((read_bytes = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+            if (httpd_resp_send_chunk(req, buffer, read_bytes) != ESP_OK) {
+                fclose(f);
+                return ESP_FAIL;
+            }
+        }
+        
+        fclose(f);
+        httpd_resp_send_chunk(req, NULL, 0);
+        return ESP_OK;
+    }
 }
 
 void ServerManager::initializePWM() {
@@ -602,9 +679,11 @@ esp_err_t ServerManager::api_device_name_handler(httpd_req_t *req) {
         char *name_end = strchr(name_start, '&');
         int len = name_end ? (name_end - name_start) : strlen(name_start);
         if (len > 0 && len < sizeof(name)) {
-            strncpy(name, name_start, len);
-            name[len] = '\0';
-            // TODO: URL decode name
+            char temp[64];
+            strncpy(temp, name_start, len);
+            temp[len] = '\0';
+            // URL decode name (e.g., %23 -> #)
+            url_decode(name, temp, sizeof(name));
         }
     } else {
         // Parse JSON
@@ -1196,8 +1275,7 @@ esp_err_t ServerManager::api_wifi_disconnect_handler(httpd_req_t *req) {
     REQUIRE_AUTH();
     
     ESP_LOGI(TAG, "WiFi disconnect requested");
-    // TODO: Disconnect WiFi via WiFiManager
-    // wifi.disconnect();
+    wifi.disconnect();
     httpd_resp_send(req, "OK", 2);
     return ESP_OK;
 }
@@ -1207,8 +1285,8 @@ esp_err_t ServerManager::api_wifi_clear_handler(httpd_req_t *req) {
     REQUIRE_AUTH();
     
     ESP_LOGI(TAG, "Clear WiFi credentials requested");
-    // TODO: Clear WiFi credentials from NVS
-    // wifi.clearCredentials();
+    wifi.clearCredentials();
+    wifi.disconnect();
     httpd_resp_send(req, "OK", 2);
     return ESP_OK;
 }
@@ -1773,13 +1851,21 @@ esp_err_t ServerManager::api_led_toggle_handler(httpd_req_t *req) {
     if (doc.containsKey("enabled")) {
         bool enabled = doc["enabled"];
         ESP_LOGI(TAG, "LED: %s", enabled ? "ON" : "OFF");
-        // TODO: Set LED via LEDManager
+        
+        if (manager->ledManager) {
+            manager->ledState = enabled;
+            if (enabled) {
+                manager->ledManager->setColor(manager->ledColorR, manager->ledColorG, manager->ledColorB);
+            } else {
+                manager->ledManager->off();
+            }
+        }
     }
     
     if (doc.containsKey("color")) {
         const char* color = doc["color"];
         ESP_LOGI(TAG, "LED color: %s", color);
-        // TODO: Set LED color via LEDManager
+        // Note: Color is typically set via RGB values in api_led_color_handler
     }
     
     httpd_resp_send(req, "OK", 2);

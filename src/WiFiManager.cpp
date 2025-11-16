@@ -217,6 +217,27 @@ bool WiFiManager::isConnected() {
     return sta_connected;
 }
 
+void WiFiManager::disconnect() {
+    ESP_LOGI(TAG, "Disconnecting from WiFi...");
+    esp_wifi_disconnect();
+    sta_connected = false;
+}
+
+void WiFiManager::clearCredentials() {
+    ESP_LOGI(TAG, "Clearing WiFi credentials from NVS...");
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("wifi", NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK) {
+        nvs_erase_key(nvs_handle, "ssid");
+        nvs_erase_key(nvs_handle, "password");
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+        ESP_LOGI(TAG, "WiFi credentials cleared");
+    } else {
+        ESP_LOGE(TAG, "Failed to open NVS for clearing credentials");
+    }
+}
+
 void WiFiManager::checkWiFiConnection() {
     // Throttle reconnection attempts to avoid log spam
     static int64_t lastReconnectAttempt = 0;

@@ -648,6 +648,23 @@
     }
     
     // Footer functions
+    function updateHeaderDeviceName(deviceName) {
+      // Update the navbar device name
+      const navbarDeviceName = document.getElementById('navbar-device-name');
+      if (navbarDeviceName) {
+        navbarDeviceName.textContent = deviceName;
+      }
+      
+      // Update the sidebar title
+      const sidebarTitle = document.querySelector('.sidebar-header h3');
+      if (sidebarTitle) {
+        sidebarTitle.textContent = 'HeatBodyVentilator - ' + deviceName;
+      }
+      
+      // Update the page title
+      document.title = 'HeatBodyVentilator / ' + deviceName + ' - Home';
+    }
+    
     function showLicense() {
       const licenseText = `HeatBodyVentilator - Custom Source-Available License
 
@@ -707,6 +724,11 @@ SmartHome-Assistant (Markus Reza Tain)`;
       fetch('/api/status?token=' + getToken())
         .then(response => response.json())
         .then(data => {
+          // Update device name in header
+          if (data.device_name) {
+            updateHeaderDeviceName(data.device_name);
+          }
+          
           // Update LED state
           if (data.led_state !== undefined) {
             document.getElementById('toggleLED-main').checked = data.led_state;
