@@ -27,6 +27,7 @@ private:
     esp_err_t i2c_read_register(uint8_t reg, uint8_t* data, size_t len);
     esp_err_t i2c_write_register(uint8_t reg, uint8_t data);
     esp_err_t i2c_scan();
+    bool diagnoseSensor();  // Comprehensive sensor diagnostics
     
 public:
     KMeterManager();

@@ -454,8 +454,13 @@
       fetch('/api/kmeter-status?token=' + getToken())
         .then(response => response.json())
         .then(data => {
-          if (data.ready && data.temperature_celsius !== undefined) {
+          console.log('KMeter Status:', data);
+          if (data.initialized && data.temperature_celsius !== undefined && data.temperature_celsius !== 0) {
             document.getElementById('temperature').textContent = data.temperature_celsius.toFixed(1) + '°C';
+          } else if (!data.initialized) {
+            document.getElementById('temperature').textContent = 'Sensor offline';
+          } else if (data.error_status !== 0) {
+            document.getElementById('temperature').textContent = 'Fehler: ' + data.error_status;
           } else {
             document.getElementById('temperature').textContent = '--°C';
           }
@@ -702,8 +707,13 @@ SmartHome-Assistant (Markus Reza Tain)`;
       fetch('/api/kmeter-status?token=' + getToken())
         .then(response => response.json())
         .then(data => {
-          if (data.ready && data.temperature_celsius !== undefined) {
+          console.log('Initial KMeter Status:', data);
+          if (data.initialized && data.temperature_celsius !== undefined && data.temperature_celsius !== 0) {
             document.getElementById('temperature').textContent = data.temperature_celsius.toFixed(1) + '°C';
+          } else if (!data.initialized) {
+            document.getElementById('temperature').textContent = 'Sensor offline';
+          } else if (data.error_status !== 0) {
+            document.getElementById('temperature').textContent = 'Fehler: ' + data.error_status;
           } else {
             document.getElementById('temperature').textContent = '--°C';
           }

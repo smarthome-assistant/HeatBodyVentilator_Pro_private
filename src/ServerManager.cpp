@@ -1261,6 +1261,20 @@ esp_err_t ServerManager::api_wifi_connect_handler(httpd_req_t *req) {
         esp_wifi_set_config(WIFI_IF_STA, &sta_config);
         esp_wifi_connect();
         
+        // Schedule ESP32 restart after sending response to ensure clean DHCP connection
+        xTaskCreate(
+            [](void* param) {
+                vTaskDelay(pdMS_TO_TICKS(3000));  // Wait 3 seconds for response to be sent
+                ESP_LOGI(TAG, "Restarting ESP32 for clean WiFi connection...");
+                esp_restart();
+            },
+            "wifi_restart",
+            2048,
+            NULL,
+            5,
+            NULL
+        );
+        
         // Return simple success message that HTML expects
         httpd_resp_send(req, "OK", 2);
         return ESP_OK;
@@ -1686,16 +1700,19 @@ esp_err_t ServerManager::api_kmeter_status_handler(httpd_req_t *req) {
     
     ServerManager* serverInstance = (ServerManager*)req->user_ctx;
     
-    DynamicJsonDocument doc(768);
+    DynamicJsonDocument doc(1024);
     
     // Get KMeter data
-    bool isReady = serverInstance->getKMeterManager()->isReady();
-    float tempC = serverInstance->getKMeterManager()->getTemperatureCelsius();
-    float tempF = serverInstance->getKMeterManager()->getTemperatureFahrenheit();
-    float internalTemp = serverInstance->getKMeterManager()->getInternalTemperature();
+    KMeterManager* kmeter = serverInstance->getKMeterManager();
+    bool initialized = kmeter->isInitialized();
+    bool isReady = kmeter->isReady();
+    float tempC = kmeter->getTemperatureCelsius();
+    float tempF = kmeter->getTemperatureFahrenheit();
+    float internalTemp = kmeter->getInternalTemperature();
+    uint8_t errorStatus = kmeter->getErrorStatus();
     
-    doc["connected"] = true; // TODO: Check actual connection
-    doc["initialized"] = true; // Assume initialized if we got here
+    doc["connected"] = initialized;
+    doc["initialized"] = initialized;
     doc["ready"] = isReady;
     doc["temperature"] = tempC; // Legacy field
     doc["temperature_celsius"] = tempC;
@@ -1703,17 +1720,22 @@ esp_err_t ServerManager::api_kmeter_status_handler(httpd_req_t *req) {
     doc["temperature_fahrenheit"] = tempF;
     doc["internal_temperature"] = internalTemp;
     doc["unit"] = Config::TEMP_UNIT;
+    doc["error_status"] = errorStatus;
     
-    // Status string
-    if (isReady) {
+    // Status string with detailed error info
+    if (!initialized) {
+        doc["status_string"] = "Sensor nicht initialisiert";
+    } else if (isReady) {
         doc["status_string"] = "Bereit";
     } else {
-        doc["status_string"] = "Nicht bereit";
+        char statusBuf[64];
+        snprintf(statusBuf, sizeof(statusBuf), "Fehler (Status: %d)", errorStatus);
+        doc["status_string"] = statusBuf;
     }
     
     // I2C configuration
     doc["i2c_address"] = "0x66";
-    doc["read_interval"] = 1000; // Default 1 second
+    doc["read_interval"] = 5000; // 5 seconds
     
     char response[768];
     serializeJson(doc, response, sizeof(response));

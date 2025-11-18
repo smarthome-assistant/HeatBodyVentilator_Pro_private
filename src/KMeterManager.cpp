@@ -5,15 +5,13 @@
 
 static const char *TAG = "KMeter";
 
-// KMeter-ISO Register Adressen (basierend auf M5UnitKmeterISO)
-#define KMETER_REG_TEMP_C_MSB       0x00
-#define KMETER_REG_TEMP_C_LSB       0x01
-#define KMETER_REG_TEMP_F_MSB       0x04
-#define KMETER_REG_TEMP_F_LSB       0x05
-#define KMETER_REG_INTERNAL_TEMP    0x08
-#define KMETER_REG_STATUS           0x0C
-#define KMETER_REG_FIRMWARE         0x0E
-#define KMETER_REG_I2C_ADDR         0x0F
+// KMeter-ISO Register Adressen (basierend auf offizieller M5Stack Library)
+#define KMETER_REG_TEMP_CELSIUS         0x00  // 4 bytes - int32_t
+#define KMETER_REG_TEMP_FAHRENHEIT      0x04  // 4 bytes - int32_t
+#define KMETER_REG_INTERNAL_TEMP        0x10  // 4 bytes - int32_t
+#define KMETER_REG_STATUS               0x20  // 1 byte
+#define KMETER_REG_FIRMWARE             0xFE  // 1 byte
+#define KMETER_REG_I2C_ADDR             0xFF  // 1 byte
 
 KMeterManager::KMeterManager() {
     initialized = false;
@@ -29,22 +27,45 @@ KMeterManager::KMeterManager() {
     i2cSpeed = 100000;
     readInterval = 5000000; // 5 seconds in microseconds
     i2c_port = I2C_NUM_0;
+    
+    // DEBUGGING: Test verschiedene I2C Geschwindigkeiten
+    // Arduino verwendet standardmäßig 100kHz, aber ESP-IDF könnte anders sein
+    ESP_LOGI(TAG, "NOTE: Testing with 100kHz I2C speed (Arduino default)");
 }
 
 esp_err_t KMeterManager::i2c_read_register(uint8_t reg, uint8_t* data, size_t len) {
+    // EXACT Arduino Wire.h behavior replication:
+    // 1. beginTransmission(addr) + write(reg) + endTransmission(false)
+    // 2. requestFrom(addr, len) - reads len bytes with ACK, except last byte gets NACK
+    
     i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    if (cmd == NULL) {
+        return ESP_FAIL;
+    }
+    
+    // Phase 1: Write register address
     i2c_master_start(cmd);
     i2c_master_write_byte(cmd, (i2cAddress << 1) | I2C_MASTER_WRITE, true);
     i2c_master_write_byte(cmd, reg, true);
+    
+    // Phase 2: Repeated START + Read data (Arduino requestFrom behavior)
     i2c_master_start(cmd);
     i2c_master_write_byte(cmd, (i2cAddress << 1) | I2C_MASTER_READ, true);
+    
+    // WICHTIG: Arduino requestFrom() liest BULK-Data, nicht byte-by-byte!
+    // Verwende i2c_master_read() statt i2c_master_read_byte() für bessere Performance
     if (len > 1) {
         i2c_master_read(cmd, data, len - 1, I2C_MASTER_ACK);
+        i2c_master_read_byte(cmd, &data[len - 1], I2C_MASTER_NACK);
+    } else if (len == 1) {
+        i2c_master_read_byte(cmd, data, I2C_MASTER_NACK);
     }
-    i2c_master_read_byte(cmd, data + len - 1, I2C_MASTER_NACK);
+    
     i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(i2c_port, cmd, pdMS_TO_TICKS(1000));
+    
+    esp_err_t ret = i2c_master_cmd_begin(i2c_port, cmd, pdMS_TO_TICKS(50));
     i2c_cmd_link_delete(cmd);
+    
     return ret;
 }
 
@@ -55,7 +76,7 @@ esp_err_t KMeterManager::i2c_write_register(uint8_t reg, uint8_t data) {
     i2c_master_write_byte(cmd, reg, true);
     i2c_master_write_byte(cmd, data, true);
     i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(i2c_port, cmd, pdMS_TO_TICKS(1000));
+    esp_err_t ret = i2c_master_cmd_begin(i2c_port, cmd, pdMS_TO_TICKS(50));
     i2c_cmd_link_delete(cmd);
     return ret;
 }
@@ -97,7 +118,7 @@ bool KMeterManager::begin(uint8_t addr, uint8_t sda, uint8_t scl, uint32_t speed
     sclPin = scl;
     i2cSpeed = speed;
     
-    // Configure I2C
+    // Configure I2C - EXACTLY like Arduino Wire.begin()
     i2c_config_t conf = {};
     conf.mode = I2C_MODE_MASTER;
     conf.sda_io_num = (gpio_num_t)sdaPin;
@@ -119,88 +140,126 @@ bool KMeterManager::begin(uint8_t addr, uint8_t sda, uint8_t scl, uint32_t speed
         return false;
     }
     
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // WICHTIG: Warte auf I2C-Stabilisierung (länger als Arduino!)
+    ESP_LOGI(TAG, "Waiting for I2C bus to stabilize...");
+    vTaskDelay(pdMS_TO_TICKS(500));  // Arduino hat 10ms delay() - wir nehmen 500ms
     
     // Scan I2C bus
-    i2c_scan();
+    esp_err_t scanResult = i2c_scan();
     
-    // Try to read firmware version
-    uint8_t fwVersion = 0;
-    ret = i2c_read_register(KMETER_REG_FIRMWARE, &fwVersion, 1);
+    if (scanResult != ESP_OK) {
+        ESP_LOGE(TAG, "No I2C devices found!");
+        initialized = false;
+        return false;
+    }
+    
+    // KRITISCH: EXAKT wie Arduino M5UnitKmeterISO Library!
+    // NUR Ping-Test während begin(), KEINE Register-Reads!
+    // Die Arduino Library liest Register erst später in update()!
+    ESP_LOGI(TAG, "Testing sensor communication (ping only)...");
+    
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (i2cAddress << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_stop(cmd);
+    ret = i2c_master_cmd_begin(i2c_port, cmd, pdMS_TO_TICKS(50));
+    i2c_cmd_link_delete(cmd);
     
     if (ret == ESP_OK) {
         initialized = true;
-        ESP_LOGI(TAG, "KMeter-ISO initialized successfully at address 0x%02X", i2cAddress);
-        ESP_LOGI(TAG, "Firmware Version: %d", fwVersion);
+        ESP_LOGI(TAG, "✓ KMeter-ISO initialized successfully - device ACK received");
         
-        // Initial read
-        update();
+        // WICHTIG: NICHT sofort update() aufrufen!
+        // Der Sensor braucht Zeit zum Aufwärmen nach I2C-Init
+        // Arduino Demo wartet bis loop() für erste Messung
+        
+        // Setze lastReadTime so dass update() beim nächsten Aufruf läuft
+        lastReadTime = 0;
+        
         return true;
     } else {
         initialized = false;
-        ESP_LOGE(TAG, "Failed to communicate with KMeter-ISO at address 0x%02X", i2cAddress);
-        ESP_LOGI(TAG, "Troubleshooting steps:");
-        ESP_LOGI(TAG, "1. Check if KMeter-ISO module is properly connected");
-        ESP_LOGI(TAG, "2. Verify SDA (Pin %d) and SCL (Pin %d) connections", sda, scl);
-        ESP_LOGI(TAG, "3. Check if I2C address is correct (default: 0x66)");
-        ESP_LOGI(TAG, "4. Ensure proper power supply to the module");
-        
+        ESP_LOGE(TAG, "✗ Sensor does not respond to I2C ping at address 0x%02X", i2cAddress);
+        ESP_LOGE(TAG, "   Error: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Possible causes:");
+        ESP_LOGE(TAG, "  - Sensor not connected");
+        ESP_LOGE(TAG, "  - Wrong I2C address");
+        ESP_LOGE(TAG, "  - Wiring error (SDA/SCL)");
+        ESP_LOGE(TAG, "  - Insufficient power supply");
         return false;
     }
 }
 
 void KMeterManager::update() {
     if (!initialized) {
+        ESP_LOGD(TAG, "update() called but sensor not initialized");
         return;
     }
     
     int64_t currentTime = esp_timer_get_time();
     if (currentTime - lastReadTime < readInterval) {
-        return;
-    }
-    
-    // Read status register
-    uint8_t status = 0;
-    esp_err_t ret = i2c_read_register(KMETER_REG_STATUS, &status, 1);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to read status register");
-        errorStatus = 255;
-        return;
-    }
-    
-    errorStatus = status;
-    
-    if (errorStatus == 0) {
-        // Read Celsius temperature (2 bytes, MSB first)
-        uint8_t tempC_data[2];
-        ret = i2c_read_register(KMETER_REG_TEMP_C_MSB, tempC_data, 2);
-        if (ret == ESP_OK) {
-            int32_t tempC = (int32_t)((tempC_data[0] << 8) | tempC_data[1]);
-            currentTempCelsius = (float)tempC / 100.0f;
-        }
-        
-        // Read Fahrenheit temperature (2 bytes, MSB first)
-        uint8_t tempF_data[2];
-        ret = i2c_read_register(KMETER_REG_TEMP_F_MSB, tempF_data, 2);
-        if (ret == ESP_OK) {
-            int32_t tempF = (int32_t)((tempF_data[0] << 8) | tempF_data[1]);
-            currentTempFahrenheit = (float)tempF / 100.0f;
-        }
-        
-        // Read internal temperature
-        uint8_t internalTemp = 0;
-        ret = i2c_read_register(KMETER_REG_INTERNAL_TEMP, &internalTemp, 1);
-        if (ret == ESP_OK) {
-            internalTempCelsius = (float)internalTemp;
-        }
-        
-        ESP_LOGI(TAG, "Temperature: %.2f°C / %.2f°F (Internal: %.1f°C)", 
-                 currentTempCelsius, currentTempFahrenheit, internalTempCelsius);
-    } else {
-        ESP_LOGW(TAG, "Sensor not ready, status: %d", errorStatus);
+        return;  // Too soon, skip this update
     }
     
     lastReadTime = currentTime;
+    
+    ESP_LOGI(TAG, "=== Starting sensor update (every 5 seconds) ===");
+    
+    // EXAKT wie Arduino M5UnitKmeterISO Library:
+    // 1. getReadyStatus() - prüfe ob Sensor bereit ist
+    // 2. getCelsiusTempValue() etc. - lese Temperaturen DIREKT als int32_t
+    
+    uint8_t status = 255;
+    ESP_LOGI(TAG, "Attempting to read status register (0x20)...");
+    esp_err_t ret = i2c_read_register(KMETER_REG_STATUS, &status, 1);
+    
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "✗ Failed to read status register: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "  This should work if sensor is properly initialized!");
+        errorStatus = 2;  // Communication Error
+        return;
+    }
+    
+    ESP_LOGI(TAG, "✓ Status register read successful: %d", status);
+    
+    errorStatus = status;
+    
+    if (status == 0) {
+        // Sensor is ready - read all temperatures
+        
+        // Arduino: int32_t tempC = kmeter.getCelsiusTempValue();
+        // Library: readBytes(_addr, KMETER_TEMP_VAL_REG, (uint8_t *)&res, 4);
+        // ⟹ Lese DIREKT in int32_t Variable!
+        
+        int32_t tempCelsius = 0;
+        ret = i2c_read_register(KMETER_REG_TEMP_CELSIUS, (uint8_t*)&tempCelsius, 4);
+        if (ret == ESP_OK) {
+            currentTempCelsius = (float)tempCelsius / 100.0f;
+            ESP_LOGI(TAG, "Celsius: %.2f°C (raw: %d)", currentTempCelsius, (int)tempCelsius);
+        } else {
+            ESP_LOGW(TAG, "Failed to read Celsius: %s", esp_err_to_name(ret));
+        }
+        
+        int32_t tempFahrenheit = 0;
+        ret = i2c_read_register(KMETER_REG_TEMP_FAHRENHEIT, (uint8_t*)&tempFahrenheit, 4);
+        if (ret == ESP_OK) {
+            currentTempFahrenheit = (float)tempFahrenheit / 100.0f;
+            ESP_LOGI(TAG, "Fahrenheit: %.2f°F (raw: %d)", currentTempFahrenheit, (int)tempFahrenheit);
+        } else {
+            ESP_LOGW(TAG, "Failed to read Fahrenheit: %s", esp_err_to_name(ret));
+        }
+        
+        int32_t tempInternal = 0;
+        ret = i2c_read_register(KMETER_REG_INTERNAL_TEMP, (uint8_t*)&tempInternal, 4);
+        if (ret == ESP_OK) {
+            internalTempCelsius = (float)tempInternal / 100.0f;
+            ESP_LOGI(TAG, "Internal: %.2f°C (raw: %d)", internalTempCelsius, (int)tempInternal);
+        } else {
+            ESP_LOGW(TAG, "Failed to read Internal: %s", esp_err_to_name(ret));
+        }
+    } else {
+        ESP_LOGW(TAG, "Sensor not ready, status: %d", status);
+    }
 }
 
 const char* KMeterManager::getStatusString() const {
@@ -242,4 +301,110 @@ uint8_t KMeterManager::getFirmwareVersion() {
         return fwVersion;
     }
     return 0;
+}
+
+bool KMeterManager::diagnoseSensor() {
+    ESP_LOGI(TAG, "=== KMeter-ISO Sensor Diagnostics ===");
+    
+    // Test 1: Check I2C communication
+    ESP_LOGI(TAG, "Test 1: Checking basic I2C communication...");
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (i2cAddress << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(i2c_port, cmd, pdMS_TO_TICKS(1000));
+    i2c_cmd_link_delete(cmd);
+    
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ FAILED: Device not responding at address 0x%02X", i2cAddress);
+        ESP_LOGE(TAG, "   Possible causes:");
+        ESP_LOGE(TAG, "   - Sensor not connected");
+        ESP_LOGE(TAG, "   - Wrong I2C address");
+        ESP_LOGE(TAG, "   - Wiring error (SDA/SCL swapped or loose)");
+        ESP_LOGE(TAG, "   - Insufficient power supply");
+        return false;
+    }
+    ESP_LOGI(TAG, "✓ PASSED: Device responds at address 0x%02X", i2cAddress);
+    
+    // Test 2: Read all registers 0x00-0x0F to see what data is available
+    ESP_LOGI(TAG, "Test 2: Reading all registers (0x00-0x0F) - Single byte reads...");
+    for (uint8_t reg = 0x00; reg <= 0x0F; reg++) {
+        uint8_t data = 0;
+        ret = i2c_read_register(reg, &data, 1);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "   Reg 0x%02X: 0x%02X (dec: %d)", reg, data, data);
+        } else {
+            ESP_LOGW(TAG, "   Reg 0x%02X: Read failed", reg);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    
+    // Test 2b: Try direct read without register pointer (some sensors work this way)
+    ESP_LOGI(TAG, "Test 2b: Trying direct read (no register address)...");
+    i2c_cmd_handle_t cmd2 = i2c_cmd_link_create();
+    i2c_master_start(cmd2);
+    i2c_master_write_byte(cmd2, (i2cAddress << 1) | I2C_MASTER_READ, true);
+    uint8_t direct_data[4];
+    i2c_master_read(cmd2, direct_data, 3, I2C_MASTER_ACK);
+    i2c_master_read_byte(cmd2, &direct_data[3], I2C_MASTER_NACK);
+    i2c_master_stop(cmd2);
+    ret = i2c_master_cmd_begin(i2c_port, cmd2, pdMS_TO_TICKS(1000));
+    i2c_cmd_link_delete(cmd2);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "   Direct read: [0]=0x%02X [1]=0x%02X [2]=0x%02X [3]=0x%02X",
+                 direct_data[0], direct_data[1], direct_data[2], direct_data[3]);
+    } else {
+        ESP_LOGW(TAG, "   Direct read failed: %s", esp_err_to_name(ret));
+    }
+    
+    // Test 2: Try to read firmware version
+    ESP_LOGI(TAG, "Test 2: Reading firmware version...");
+    uint8_t fwVersion = 0;
+    ret = i2c_read_register(KMETER_REG_FIRMWARE, &fwVersion, 1);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "⚠ WARNING: Cannot read firmware register (error: %s)", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "   This may indicate communication issues");
+    } else {
+        ESP_LOGI(TAG, "✓ PASSED: Firmware version = %d", fwVersion);
+    }
+    
+    // Test 3: Try to read status register
+    ESP_LOGI(TAG, "Test 3: Reading status register...");
+    uint8_t status = 0;
+    ret = i2c_read_register(KMETER_REG_STATUS, &status, 1);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ FAILED: Cannot read status register (error: %s)", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "   This indicates the sensor is not functioning properly");
+        return false;
+    }
+    ESP_LOGI(TAG, "✓ PASSED: Status register = %d", status);
+    
+    if (status != 0) {
+        ESP_LOGW(TAG, "⚠ WARNING: Sensor reports error status: %d", status);
+        ESP_LOGW(TAG, "   The sensor may need time to initialize or has a hardware issue");
+    }
+    
+    // Test 4: Try to read temperature registers
+    ESP_LOGI(TAG, "Test 4: Reading temperature registers...");
+    uint8_t tempData[4];
+    ret = i2c_read_register(KMETER_REG_TEMP_CELSIUS, tempData, 4);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "⚠ WARNING: Cannot read temperature registers (error: %s)", esp_err_to_name(ret));
+    } else {
+        int32_t tempRaw = (int32_t)(tempData[0] | (tempData[1] << 8) | 
+                                    (tempData[2] << 16) | (tempData[3] << 24));
+        float temp = (float)tempRaw / 100.0f;
+        ESP_LOGI(TAG, "✓ PASSED: Temperature reading = %.2f°C (raw: %d)", temp, tempRaw);
+    }
+    
+    // Test 5: Check I2C bus health
+    ESP_LOGI(TAG, "Test 5: Checking I2C bus health...");
+    ESP_LOGI(TAG, "   SDA Pin: %d, SCL Pin: %d", sdaPin, sclPin);
+    ESP_LOGI(TAG, "   I2C Speed: %lu Hz", i2cSpeed);
+    ESP_LOGI(TAG, "   I2C Port: %d", i2c_port);
+    
+    ESP_LOGI(TAG, "=== Diagnostics Complete ===");
+    
+    // Sensor is considered functional if it responds and we can read registers
+    return true;
 }
