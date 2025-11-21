@@ -1,11 +1,35 @@
+# ============================================================================
+# ARDUINO FRAMEWORK CONFIGURATION
+# ============================================================================
+# KRITISCH: Arduino benötigt FreeRTOS Tick Rate von 1000 Hz (nicht 100 Hz)
+CONFIG_FREERTOS_HZ=1000
+
+# Enable Arduino autostart (required for hybrid ESP-IDF + Arduino setup)
+CONFIG_AUTOSTART_ARDUINO=y
+
+# Arduino runs on Core 1 (default), FreeRTOS tasks can use both cores
+CONFIG_ARDUINO_RUNNING_CORE=1
+
+# Enable Arduino event loop (required for WiFi events, timers, etc.)
+CONFIG_ARDUINO_EVENT_RUNNING_CORE=1
+
+# Stack size for Arduino loop() task (default is 8192, but we need more for our app)
+CONFIG_ARDUINO_LOOP_STACK_SIZE=16384
+
+# ============================================================================
+# BLUETOOTH CONFIGURATION
+# ============================================================================
 # Bluetooth Configuration
 CONFIG_BT_ENABLED=y
-CONFIG_BLUEDROID_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=y
 CONFIG_BT_BLE_ENABLED=y
 
 # Disable Bluetooth HID (nicht benötigt)
 CONFIG_ESP_HID_ENABLED=n
 
+# ============================================================================
+# MQTT & SYSTEM CONFIGURATION
+# ============================================================================
 # MQTT Configuration
 CONFIG_MQTT_TASK_STACK_SIZE=8192
 

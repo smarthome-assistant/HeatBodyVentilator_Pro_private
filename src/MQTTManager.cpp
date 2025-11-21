@@ -214,23 +214,24 @@ void MQTTManager::begin() {
     snprintf(statusTopic, sizeof(statusTopic), "%s/status", baseTopic);
     
     esp_mqtt_client_config_t mqtt_cfg = {};
-    mqtt_cfg.broker.address.uri = uri;
-    mqtt_cfg.credentials.client_id = clientId;
+    // ESP-IDF 4.4 alte MQTT API
+    mqtt_cfg.uri = uri;
+    mqtt_cfg.client_id = clientId;
     
     if (strlen(Config::MQTT_USER) > 0) {
-        mqtt_cfg.credentials.username = Config::MQTT_USER;
-        mqtt_cfg.credentials.authentication.password = Config::MQTT_PASS;
+        mqtt_cfg.username = Config::MQTT_USER;
+        mqtt_cfg.password = Config::MQTT_PASS;
     }
     
-    mqtt_cfg.session.last_will.topic = statusTopic;
-    mqtt_cfg.session.last_will.msg = "offline";
-    mqtt_cfg.session.last_will.qos = 1;
-    mqtt_cfg.session.last_will.retain = true;
+    mqtt_cfg.lwt_topic = statusTopic;
+    mqtt_cfg.lwt_msg = "offline";
+    mqtt_cfg.lwt_qos = 1;
+    mqtt_cfg.lwt_retain = true;
     
-    mqtt_cfg.buffer.size = 2048;
-    mqtt_cfg.task.stack_size = 8192;  // Increase stack size for JSON serialization (default 4096)
-    mqtt_cfg.network.reconnect_timeout_ms = 10000;  // Wait 10s between reconnect attempts
-    mqtt_cfg.network.disable_auto_reconnect = false;
+    mqtt_cfg.buffer_size = 2048;
+    mqtt_cfg.task_stack = 8192;
+    mqtt_cfg.reconnect_timeout_ms = 10000;
+    mqtt_cfg.disable_auto_reconnect = false;
     
     mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(mqtt_client, (esp_mqtt_event_id_t)ESP_EVENT_ANY_ID, 

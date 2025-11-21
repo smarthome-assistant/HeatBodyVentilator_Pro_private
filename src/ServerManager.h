@@ -7,6 +7,9 @@
 #include "OTAManager.h"
 #include "driver/ledc.h"
 
+// Forward declaration for Arduino sensor component
+class KMeterIsoComponent;
+
 class ServerManager {
 public:
     ServerManager();
@@ -19,6 +22,7 @@ public:
     void updateSensors();
     void updateAutoPWM();
     KMeterManager* getKMeterManager() { return &kmeterManager; }
+    void setExternalSensor(KMeterIsoComponent* sensor) { externalSensor = sensor; }  // Hybrid mode: Use Arduino sensor
     void setLEDManager(LEDManager* manager) { ledManager = manager; }
     void getLEDColor(uint8_t* r, uint8_t* g, uint8_t* b) { *r = ledColorR; *g = ledColorG; *b = ledColorB; }
     void setLEDColor(uint8_t r, uint8_t g, uint8_t b) { ledColorR = r; ledColorG = g; ledColorB = b; }
@@ -26,7 +30,8 @@ public:
     
 private:
     httpd_handle_t server;
-    KMeterManager kmeterManager;
+    KMeterManager kmeterManager;  // Legacy ESP-IDF sensor (not used in hybrid mode)
+    KMeterIsoComponent* externalSensor;  // Hybrid mode: Arduino sensor from main.cpp
     LEDManager* ledManager;
     OTAManager otaManager;
     bool ledState;

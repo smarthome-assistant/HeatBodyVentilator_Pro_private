@@ -2,6 +2,7 @@
 #include "WiFiManager.h"
 #include "MQTTManager.h"
 #include "LEDManager.h"
+#include "KMeterIsoComponent.h"  // Arduino sensor for hybrid mode
 #include "ArduinoJson.h"
 #include <string.h>
 #include "esp_spiffs.h"
@@ -34,8 +35,8 @@ extern WiFiManager wifi;
 
 static ServerManager* serverInstance = nullptr;
 
-ServerManager::ServerManager() : server(nullptr), ledManager(nullptr), ledState(false), 
-                                 ledColorR(255), ledColorG(255), ledColorB(255) {
+ServerManager::ServerManager() : server(nullptr), externalSensor(nullptr), ledManager(nullptr), 
+                                 ledState(false), ledColorR(255), ledColorG(255), ledColorB(255) {
     serverInstance = this;
 }
 
@@ -61,12 +62,9 @@ void ServerManager::begin() {
     
     initializePWM();
     
-    ESP_LOGI(TAG, "Initializing KMeter-ISO sensor...");
-    if (kmeterManager.begin(0x66, 26, 32)) {
-        ESP_LOGI(TAG, "KMeter-ISO sensor initialized successfully");
-    } else {
-        ESP_LOGW(TAG, "KMeter-ISO sensor initialization failed, continuing without sensor");
-    }
+    // HINWEIS: KMeter-Sensor wird jetzt im Hybrid-Mode über Arduino-Library initialisiert (main.cpp)
+    // Der alte ESP-IDF KMeterManager würde einen I2C-Konflikt verursachen
+    ESP_LOGI(TAG, "KMeter-ISO sensor: Using Arduino-based sensor from main.cpp (hybrid mode)");
     
     Config::saveAutoPWMEnabled(true);
     ESP_LOGI(TAG, "Auto-PWM enabled for fan control");
@@ -79,6 +77,8 @@ void ServerManager::begin() {
     config.lru_purge_enable = true;  // Enable connection purging
     config.recv_wait_timeout = 10;   // Timeout for receiving data
     config.send_wait_timeout = 10;   // Timeout for sending data
+    config.max_open_sockets = 7;     // Allow more concurrent connections
+    config.backlog_conn = 5;         // Increase connection backlog
     
     if (httpd_start(&server, &config) == ESP_OK) {
         setupRoutes();
@@ -112,6 +112,8 @@ void ServerManager::restart() {
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 10;
     config.send_wait_timeout = 10;
+    config.max_open_sockets = 7;
+    config.backlog_conn = 5;
     
     if (httpd_start(&server, &config) == ESP_OK) {
         setupRoutes();
@@ -129,6 +131,10 @@ void ServerManager::setupRoutes() {
     
     httpd_uri_t login_uri = {.uri = "/login.html", .method = HTTP_GET, .handler = login_handler, .user_ctx = this};
     httpd_register_uri_handler(server, &login_uri);
+    
+    // Allow users to reach the login page via /login (without .html)
+    httpd_uri_t login_alias_uri = {.uri = "/login", .method = HTTP_GET, .handler = login_handler, .user_ctx = this};
+    httpd_register_uri_handler(server, &login_alias_uri);
     
     httpd_uri_t main_uri = {.uri = "/main.html", .method = HTTP_GET, .handler = main_handler, .user_ctx = this};
     httpd_register_uri_handler(server, &main_uri);
@@ -275,14 +281,29 @@ void ServerManager::handleClient() {
 
 // Helper function to serve files from SPIFFS
 static esp_err_t serve_spiffs_file(httpd_req_t *req, const char* filepath, const char* content_type) {
+    ESP_LOGI(TAG, "[DEBUG] Serving file: %s (type: %s)", filepath, content_type);
+    ESP_LOGI(TAG, "[DEBUG] Request URI: %s", req->uri);
+    
+    // Log request headers size
+    size_t hdr_len = httpd_req_get_hdr_value_len(req, "User-Agent");
+    ESP_LOGI(TAG, "[DEBUG] User-Agent header length: %d", hdr_len);
+    hdr_len = httpd_req_get_hdr_value_len(req, "Cookie");
+    ESP_LOGI(TAG, "[DEBUG] Cookie header length: %d", hdr_len);
+    
     FILE* f = fopen(filepath, "r");
     if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file: %s", filepath);
+        ESP_LOGE(TAG, "[ERROR] Failed to open file: %s", filepath);
         httpd_resp_send_404(req);
         return ESP_FAIL;
     }
     
+    ESP_LOGI(TAG, "[DEBUG] File opened successfully");
     httpd_resp_set_type(req, content_type);
+    
+    // Prevent browser caching to ensure users get latest files
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
     
     // Check if this is an HTML file that needs placeholder replacement
     bool needsReplacement = (strstr(content_type, "text/html") != NULL);
@@ -385,12 +406,11 @@ void ServerManager::initializePWM() {
         .duty_resolution = LEDC_TIMER_8_BIT,
         .timer_num = LEDC_TIMER_0,
         .freq_hz = freq,
-        .clk_cfg = LEDC_AUTO_CLK,
-        .deconfigure = false
+        .clk_cfg = LEDC_AUTO_CLK
     };
     
     if (ledc_timer_config(&ledc_timer) == ESP_OK) {
-        ESP_LOGI(TAG, "PWM Timer configured with %lu Hz", freq);
+        ESP_LOGI(TAG, "PWM Timer configured with %u Hz", (unsigned int)freq);
         
         ledc_channel_config_t ledc_channel = {
             .gpio_num = 22,
@@ -400,10 +420,7 @@ void ServerManager::initializePWM() {
             .timer_sel = LEDC_TIMER_0,
             .duty = 0,
             .hpoint = 0,
-            .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
-            .flags = {
-                .output_invert = 0
-            }
+            .flags = {0}
         };
         
         if (ledc_channel_config(&ledc_channel) == ESP_OK) {
@@ -420,19 +437,18 @@ void ServerManager::initializePWM() {
 }
 
 void ServerManager::reconfigurePWM(uint32_t frequency) {
-    ESP_LOGI(TAG, "Reconfiguring PWM to %lu Hz...", frequency);
+    ESP_LOGI(TAG, "Reconfiguring PWM to %u Hz...", (unsigned int)frequency);
     
     ledc_timer_config_t ledc_timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_8_BIT,
         .timer_num = LEDC_TIMER_0,
         .freq_hz = frequency,
-        .clk_cfg = LEDC_AUTO_CLK,
-        .deconfigure = false
+        .clk_cfg = LEDC_AUTO_CLK
     };
     
     if (ledc_timer_config(&ledc_timer) == ESP_OK) {
-        ESP_LOGI(TAG, "PWM reconfigured to %lu Hz", frequency);
+        ESP_LOGI(TAG, "PWM reconfigured to %u Hz", (unsigned int)frequency);
         
         if (Config::MANUAL_PWM_MODE) {
             int duty = (Config::MANUAL_PWM_DUTY * 255) / 100;
@@ -456,6 +472,12 @@ void ServerManager::setPWMDuty(int duty) {
 }
 
 void ServerManager::updateSensors() {
+    // In hybrid mode, use external Arduino sensor (no update needed - reads on demand)
+    if (externalSensor) {
+        // Arduino sensor updates automatically, no explicit update() needed
+        return;
+    }
+    // Fallback to old ESP-IDF manager (only if not in hybrid mode)
     kmeterManager.update();
 }
 
@@ -476,7 +498,8 @@ void ServerManager::updateAutoPWM() {
         return;
     }
     
-    float temp = kmeterManager.getTemperatureCelsius();
+    // In hybrid mode, use external Arduino sensor for temperature
+    float temp = externalSensor ? externalSensor->getTemperatureCelsius() : kmeterManager.getTemperatureCelsius();
     if (temp > 0) {
         int pwm = mapTemperatureToPWM(temp);
         setPWMDuty(pwm);
@@ -566,16 +589,24 @@ bool ServerManager::check_token(httpd_req_t *req) {
 }
 
 esp_err_t ServerManager::root_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "[DEBUG] ===== ROOT HANDLER CALLED =====");
+    ESP_LOGI(TAG, "[DEBUG] URI: %s", req->uri);
+    
     // Check for token in URL
     if (!check_auth(req)) {
+        ESP_LOGI(TAG, "[DEBUG] No valid token - redirecting to login");
         // No valid token - show login page
         return serve_spiffs_file(req, "/spiffs/login.html", "text/html");
     }
+    ESP_LOGI(TAG, "[DEBUG] Valid token - serving main page");
     // Valid token - show main page
     return serve_spiffs_file(req, "/spiffs/main.html", "text/html");
 }
 
 esp_err_t ServerManager::login_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "[DEBUG] ===== LOGIN HANDLER CALLED =====");
+    ESP_LOGI(TAG, "[DEBUG] URI: %s", req->uri);
+    ESP_LOGI(TAG, "[DEBUG] Method: %d", req->method);
     return serve_spiffs_file(req, "/spiffs/login.html", "text/html");
 }
 
@@ -636,11 +667,11 @@ esp_err_t ServerManager::api_status_handler(httpd_req_t *req) {
     uint32_t minutes = (uptime_sec % 3600) / 60;
     char uptime_str[64];
     if (days > 0) {
-        snprintf(uptime_str, sizeof(uptime_str), "%lud %luh %lum", days, hours, minutes);
+        snprintf(uptime_str, sizeof(uptime_str), "%ud %uh %um", (unsigned int)days, (unsigned int)hours, (unsigned int)minutes);
     } else if (hours > 0) {
-        snprintf(uptime_str, sizeof(uptime_str), "%luh %lum", hours, minutes);
+        snprintf(uptime_str, sizeof(uptime_str), "%uh %um", (unsigned int)hours, (unsigned int)minutes);
     } else {
-        snprintf(uptime_str, sizeof(uptime_str), "%lum", minutes);
+        snprintf(uptime_str, sizeof(uptime_str), "%um", (unsigned int)minutes);
     }
     doc["uptime"] = uptime_str;
     
@@ -854,15 +885,20 @@ esp_err_t ServerManager::api_login_handler(httpd_req_t *req) {
 
 // POST handler for HTML login form (receives form-urlencoded data)
 esp_err_t ServerManager::login_post_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "[DEBUG] ===== LOGIN POST HANDLER CALLED =====");
+    ESP_LOGI(TAG, "[DEBUG] URI: %s", req->uri);
+    ESP_LOGI(TAG, "[DEBUG] Content length: %d", req->content_len);
+    
     char buf[256];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
+        ESP_LOGE(TAG, "[ERROR] Failed to receive POST data, ret=%d", ret);
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
     buf[ret] = '\0';
     
-    ESP_LOGI(TAG, "Login POST data: %s", buf);
+    ESP_LOGI(TAG, "[DEBUG] Login POST data received (length=%d): %s", ret, buf);
     
     // Parse form data: password=xxx&rememberMe=on
     char password[64] = {0};
@@ -1114,12 +1150,7 @@ esp_err_t ServerManager::api_wifi_scan_handler(httpd_req_t *req) {
             },
             .passive = 0
         },
-        .home_chan_dwell_time = 30,  // Return to AP channel every 30ms to service clients
-        .channel_bitmap = {
-            .ghz_2_channels = 0,
-            .ghz_5_channels = 0
-        },
-        .coex_background_scan = false  // Disable to avoid longer scan times
+        .home_chan_dwell_time = 30  // Return to AP channel every 30ms to service clients
     };
     
     err = esp_wifi_scan_start(&scan_config, true);
@@ -1702,14 +1733,32 @@ esp_err_t ServerManager::api_kmeter_status_handler(httpd_req_t *req) {
     
     DynamicJsonDocument doc(1024);
     
-    // Get KMeter data
-    KMeterManager* kmeter = serverInstance->getKMeterManager();
-    bool initialized = kmeter->isInitialized();
-    bool isReady = kmeter->isReady();
-    float tempC = kmeter->getTemperatureCelsius();
-    float tempF = kmeter->getTemperatureFahrenheit();
-    float internalTemp = kmeter->getInternalTemperature();
-    uint8_t errorStatus = kmeter->getErrorStatus();
+    // Get temperature data - use external Arduino sensor if available
+    bool initialized = false;
+    bool isReady = false;
+    float tempC = 0.0f;
+    float tempF = 0.0f;
+    float internalTemp = 0.0f;
+    uint8_t errorStatus = 0;
+    
+    if (serverInstance->externalSensor) {
+        // Use Arduino KMeterISO sensor (hybrid mode)
+        tempC = serverInstance->externalSensor->getTemperatureCelsius();
+        tempF = serverInstance->externalSensor->getTemperatureFahrenheit();
+        internalTemp = serverInstance->externalSensor->getInternalTemperature();
+        initialized = (tempC > -100.0f);  // Valid temperature indicates initialized sensor
+        isReady = initialized;
+        errorStatus = 0;  // Arduino library doesn't expose error status directly
+    } else {
+        // Fallback to old ESP-IDF KMeterManager
+        KMeterManager* kmeter = serverInstance->getKMeterManager();
+        initialized = kmeter->isInitialized();
+        isReady = kmeter->isReady();
+        tempC = kmeter->getTemperatureCelsius();
+        tempF = kmeter->getTemperatureFahrenheit();
+        internalTemp = kmeter->getInternalTemperature();
+        errorStatus = kmeter->getErrorStatus();
+    }
     
     doc["connected"] = initialized;
     doc["initialized"] = initialized;
@@ -1823,7 +1872,6 @@ esp_err_t ServerManager::api_led_toggle_handler(httpd_req_t *req) {
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
         // If no body, just toggle
-        ESP_LOGI(TAG, "LED toggle (no body)");
         if (manager->ledManager) {
             manager->ledState = !manager->ledState;
             if (manager->ledState) {
@@ -1933,7 +1981,6 @@ esp_err_t ServerManager::api_led_color_handler(httpd_req_t *req) {
         // Only apply color if LED is currently ON
         if (manager->ledManager && manager->ledState) {
             manager->ledManager->setColor(r, g, b);
-            ESP_LOGI(TAG, "LED color applied immediately (LED is ON)");
         }
         
         httpd_resp_send(req, "OK", 2);

@@ -434,7 +434,7 @@
   </footer>
 
   <script>
-    // Auto-refresh data every 30 seconds
+    // Auto-refresh data every 5 seconds
     setInterval(() => {
       // Update Fan Status
       fetch('/api/pwm-status?token=' + getToken())
@@ -505,7 +505,7 @@
           }
         })
         .catch(error => console.log('Status update failed:', error));
-    }, 30000);
+    }, 5000);
 
     function toggleLEDMain() {
       const isEnabled = document.getElementById('toggleLED-main').checked;

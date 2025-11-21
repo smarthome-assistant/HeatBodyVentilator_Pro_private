@@ -1,5 +1,7 @@
 #include "BluetoothProxyManager.h"
 #include "Config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 
 static const char *TAG = "BT_PROXY";

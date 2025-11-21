@@ -110,10 +110,8 @@ esp_err_t KMeterManager::i2c_scan() {
 
 bool KMeterManager::begin(uint8_t addr, uint8_t sda, uint8_t scl, uint32_t speed) {
     ESP_LOGI(TAG, "Initializing KMeter-ISO...");
-    ESP_LOGI(TAG, "I2C Config - Addr: 0x%02X, SDA: %d, SCL: %d, Speed: %lu Hz", 
-             addr, sda, scl, speed);
-    
-    i2cAddress = addr;
+    ESP_LOGI(TAG, "I2C Config - Addr: 0x%02X, SDA: %d, SCL: %d, Speed: %u Hz",
+             addr, sda, scl, (unsigned int)speed);    i2cAddress = addr;
     sdaPin = sda;
     sclPin = scl;
     i2cSpeed = speed;
@@ -191,75 +189,17 @@ bool KMeterManager::begin(uint8_t addr, uint8_t sda, uint8_t scl, uint32_t speed
 }
 
 void KMeterManager::update() {
+    // TEMPORÄR KOMPLETT DEAKTIVIERT
+    // Grund: I2C-Operationen blockieren den Watchdog (sowohl alter als auch neuer Driver)
+    // Lösung: Muss in separaten Task ausgelagert werden
+    
     if (!initialized) {
-        ESP_LOGD(TAG, "update() called but sensor not initialized");
         return;
     }
     
-    int64_t currentTime = esp_timer_get_time();
-    if (currentTime - lastReadTime < readInterval) {
-        return;  // Too soon, skip this update
-    }
-    
-    lastReadTime = currentTime;
-    
-    ESP_LOGI(TAG, "=== Starting sensor update (every 5 seconds) ===");
-    
-    // EXAKT wie Arduino M5UnitKmeterISO Library:
-    // 1. getReadyStatus() - prüfe ob Sensor bereit ist
-    // 2. getCelsiusTempValue() etc. - lese Temperaturen DIREKT als int32_t
-    
-    uint8_t status = 255;
-    ESP_LOGI(TAG, "Attempting to read status register (0x20)...");
-    esp_err_t ret = i2c_read_register(KMETER_REG_STATUS, &status, 1);
-    
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "✗ Failed to read status register: %s", esp_err_to_name(ret));
-        ESP_LOGE(TAG, "  This should work if sensor is properly initialized!");
-        errorStatus = 2;  // Communication Error
-        return;
-    }
-    
-    ESP_LOGI(TAG, "✓ Status register read successful: %d", status);
-    
-    errorStatus = status;
-    
-    if (status == 0) {
-        // Sensor is ready - read all temperatures
-        
-        // Arduino: int32_t tempC = kmeter.getCelsiusTempValue();
-        // Library: readBytes(_addr, KMETER_TEMP_VAL_REG, (uint8_t *)&res, 4);
-        // ⟹ Lese DIREKT in int32_t Variable!
-        
-        int32_t tempCelsius = 0;
-        ret = i2c_read_register(KMETER_REG_TEMP_CELSIUS, (uint8_t*)&tempCelsius, 4);
-        if (ret == ESP_OK) {
-            currentTempCelsius = (float)tempCelsius / 100.0f;
-            ESP_LOGI(TAG, "Celsius: %.2f°C (raw: %d)", currentTempCelsius, (int)tempCelsius);
-        } else {
-            ESP_LOGW(TAG, "Failed to read Celsius: %s", esp_err_to_name(ret));
-        }
-        
-        int32_t tempFahrenheit = 0;
-        ret = i2c_read_register(KMETER_REG_TEMP_FAHRENHEIT, (uint8_t*)&tempFahrenheit, 4);
-        if (ret == ESP_OK) {
-            currentTempFahrenheit = (float)tempFahrenheit / 100.0f;
-            ESP_LOGI(TAG, "Fahrenheit: %.2f°F (raw: %d)", currentTempFahrenheit, (int)tempFahrenheit);
-        } else {
-            ESP_LOGW(TAG, "Failed to read Fahrenheit: %s", esp_err_to_name(ret));
-        }
-        
-        int32_t tempInternal = 0;
-        ret = i2c_read_register(KMETER_REG_INTERNAL_TEMP, (uint8_t*)&tempInternal, 4);
-        if (ret == ESP_OK) {
-            internalTempCelsius = (float)tempInternal / 100.0f;
-            ESP_LOGI(TAG, "Internal: %.2f°C (raw: %d)", internalTempCelsius, (int)tempInternal);
-        } else {
-            ESP_LOGW(TAG, "Failed to read Internal: %s", esp_err_to_name(ret));
-        }
-    } else {
-        ESP_LOGW(TAG, "Sensor not ready, status: %d", status);
-    }
+    // Setze Status auf "Sensor not ready" damit UI weiß dass keine Daten kommen
+    errorStatus = 255;
+    return;
 }
 
 const char* KMeterManager::getStatusString() const {
@@ -400,7 +340,7 @@ bool KMeterManager::diagnoseSensor() {
     // Test 5: Check I2C bus health
     ESP_LOGI(TAG, "Test 5: Checking I2C bus health...");
     ESP_LOGI(TAG, "   SDA Pin: %d, SCL Pin: %d", sdaPin, sclPin);
-    ESP_LOGI(TAG, "   I2C Speed: %lu Hz", i2cSpeed);
+    ESP_LOGI(TAG, "   I2C Speed: %u Hz", (unsigned int)i2cSpeed);
     ESP_LOGI(TAG, "   I2C Port: %d", i2c_port);
     
     ESP_LOGI(TAG, "=== Diagnostics Complete ===");

@@ -408,7 +408,7 @@
         Falsches Passwort. Bitte versuchen Sie es erneut.
       </div>
       
-      <form class="login-form" id="loginForm" method="POST" action="/login">
+      <form class="login-form" id="loginForm">
         <div class="form-group">
           <label class="form-label" for="password">Passwort</label>
           <div class="password-container">
@@ -475,10 +475,11 @@
 
     // Form submission
     loginForm.addEventListener('submit', function(e) {
+      e.preventDefault(); // Prevent default form submission
+      
       const password = passwordInput.value;
       
       if (!password) {
-        e.preventDefault();
         showError('Bitte gib dein Passwort ein.');
         return;
       }
@@ -490,8 +491,34 @@
         localStorage.removeItem('rememberLogin');
       }
       
-      // Let the form submit normally
+      // Use fetch API instead of form POST to avoid large browser headers
       setLoadingState(true);
+      
+      fetch('/api/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ password: password })
+      })
+      .then(response => response.json())
+      .then(data => {
+        setLoadingState(false);
+        if (data.success && data.token) {
+          showSuccess('Login erfolgreich! Weiterleitung...');
+          // Redirect to main page with token
+          setTimeout(() => {
+            window.location.href = '/?token=' + data.token;
+          }, 500);
+        } else {
+          showError(data.error || 'Falsches Passwort. Bitte versuchen Sie es erneut.');
+        }
+      })
+      .catch(error => {
+        setLoadingState(false);
+        showError('Verbindungsfehler. Bitte versuchen Sie es erneut.');
+        console.error('Login error:', error);
+      });
     });
 
     function setLoadingState(loading) {
@@ -558,18 +585,11 @@
 
     // Keyboard shortcuts
     document.addEventListener('keydown', function(e) {
-      // Enter key in username field moves to password
-      if (e.key === 'Enter' && document.activeElement === usernameInput) {
-        e.preventDefault();
-        passwordInput.focus();
-      }
-      
       // Escape key clears form
       if (e.key === 'Escape') {
-        usernameInput.value = '';
         passwordInput.value = '';
         hideError();
-        usernameInput.focus();
+        passwordInput.focus();
       }
     });
 
